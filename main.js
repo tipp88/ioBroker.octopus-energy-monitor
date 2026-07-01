@@ -1126,7 +1126,8 @@ class EnergyCompare extends utils.Adapter {
 			}
 
 			const fetchRaw = isSplit || this.config.enableHistorySync;
-			let result = { total: 0, slots: {}, rawIntervals: /** @type {Array<{ts: number, val: number}>} */ ([]) };
+			/** @type {{ total: number, slots: Object<string, any>, enwgSlots?: Object<string, any>, rawIntervals: Array<{ts: number, val: number}> }} */
+			let result = { total: 0, slots: {}, rawIntervals: [] };
 
 			// Calculate consumption per 15-min interval
 			// Readings provide the absolute 'energy' counter at the end of each slot.
@@ -1185,7 +1186,7 @@ class EnergyCompare extends utils.Adapter {
 							const fromH = seg.fromMin / 60;
 							const toH = seg.toMin / 60;
 							if (nodeHour >= fromH && nodeHour < toH) {
-								result.enwgSlots[tariffName].consumption += interval.val;
+								if (result.enwgSlots) result.enwgSlots[tariffName].consumption += interval.val;
 								matched = true;
 								break;
 							}
