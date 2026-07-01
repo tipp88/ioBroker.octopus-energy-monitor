@@ -952,7 +952,7 @@ class EnergyCompare extends utils.Adapter {
 			const startMs = start.getTime();
 			const endMs = start.getTime() + 24 * 60 * 60 * 1000;
 
-			let result = { total: 0, slots: {}, rawIntervals: [] };
+			let result = { total: 0, slots: {}, rawIntervals: /** @type {Array<{ts: number, val: number}>} */ ([]) };
 			for (const r of this.masterData.rates) {
 				result.slots[r.name] = { consumption: 0, cost: 0, rateEuros: r.rateEuros };
 			}
@@ -1126,7 +1126,7 @@ class EnergyCompare extends utils.Adapter {
 			}
 
 			const fetchRaw = isSplit || this.config.enableHistorySync;
-			let result = { total: 0, slots: {}, rawIntervals: [] };
+			let result = { total: 0, slots: {}, rawIntervals: /** @type {Array<{ts: number, val: number}>} */ ([]) };
 
 			// Calculate consumption per 15-min interval
 			// Readings provide the absolute 'energy' counter at the end of each slot.
