@@ -260,12 +260,6 @@ class EnergyCompare extends utils.Adapter {
 					unit: 'kWh',
 					read: true,
 					write: false,
-					custom: {
-						[this.config.historyInstance]: {
-							enabled: true,
-							changesOnly: false,
-						},
-					},
 				},
 				native: {},
 			});
@@ -278,12 +272,6 @@ class EnergyCompare extends utils.Adapter {
 					unit: 'kWh',
 					read: true,
 					write: false,
-					custom: {
-						[this.config.historyInstance]: {
-							enabled: true,
-							changesOnly: false,
-						},
-					},
 				},
 				native: {},
 			});
@@ -1186,7 +1174,9 @@ class EnergyCompare extends utils.Adapter {
 							const fromH = seg.fromMin / 60;
 							const toH = seg.toMin / 60;
 							if (nodeHour >= fromH && nodeHour < toH) {
-								if (result.enwgSlots) result.enwgSlots[tariffName].consumption += interval.val;
+								if (result.enwgSlots) {
+									result.enwgSlots[tariffName].consumption += interval.val;
+								}
 								matched = true;
 								break;
 							}
