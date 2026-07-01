@@ -291,7 +291,7 @@
 				"historyInstance": {
 					"type": "instance",
 					"label": "History Database Instance",
-					"adapter": ["influxdb", "sql", "history"],
+					"adapter": "_dataSources",
 					"hidden": "!data.enableHistorySync",
 					"newLine": false,
 					"xs": 12,
