@@ -72,6 +72,9 @@ Once configured, the adapter handles the rest! It sets an internal Cronjob scali
 * (tipp88) Implemented native historical database synchronization to automatically push 15-minute intervals directly to InfluxDB, SQL, or History instances.
 * (tipp88) Massively optimized Inexogy retroactive API polling by switching to the Discovergy `readings` endpoint, fetching 96 data points in a single request.
 * (tipp88) Fixed strict ioBroker JSON schema compliance bugs in `admin/jsonConfig.json` regarding dropdown instance filtering.
+* (tipp88) Fixed `rate.name` from external API being used unsanitized in ioBroker object IDs.
+* (tipp88) Fixed `setSmartChargeStatus()` sending the sanitized device ID to Octopus API instead of original ID.
+* (tipp88) Optimized database interval sync by consolidating all object scans into a single pre-fetch.
 
 ### 0.6.7 (2026-07-01)
 * (tipp88) Fixed missing UI translations for the `updateInterval` minimum warning.
