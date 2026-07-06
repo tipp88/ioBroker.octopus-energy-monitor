@@ -1,4 +1,8 @@
 # Older changes
+## 0.6.3 (2026-06-11)
+* (tipp88) Fixed repository compliance issues by removing custom GitHub/NPM installation instructions from README.md.
+* (tipp88) Upgraded dependencies (axios to ^1.17.0, @tsconfig/node22 to ^22.0.5).
+
 ## 0.6.2 (2026-06-08)
 * (tipp88) Upgraded out-of-date devDependencies (including typescript to ~6.0.3) and updated TSConfig base reference to Node 22.
 * (tipp88) Adjusted CI test matrix to test Node 22 and 24 (dropping unsupported Node 20).

@@ -1,6 +1,6 @@
 {
   "name": "iobroker.octopus-energy-monitor",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "description": "Compare daily energy consumption between Octopus Energy and Inexogy",
   "author": "tipp88",
   "contributors": [],

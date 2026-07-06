@@ -72,6 +72,8 @@ Once configured, the adapter handles the rest! It sets an internal Cronjob scali
 * (tipp88) Implemented native historical database synchronization to automatically push 15-minute intervals directly to InfluxDB, SQL, or History instances.
 * (tipp88) Massively optimized Inexogy retroactive API polling by switching to the Discovergy `readings` endpoint, fetching 96 data points in a single request.
 * (tipp88) Fixed strict ioBroker JSON schema compliance bugs in `admin/jsonConfig.json` regarding dropdown instance filtering.
+
+### 0.6.8 (2026-07-06)
 * (tipp88) Fixed `rate.name` from external API being used unsanitized in ioBroker object IDs.
 * (tipp88) Fixed `setSmartChargeStatus()` sending the sanitized device ID to Octopus API instead of original ID.
 * (tipp88) Optimized database interval sync by consolidating all object scans into a single pre-fetch.
@@ -93,10 +95,6 @@ Once configured, the adapter handles the rest! It sets an internal Cronjob scali
 ### 0.6.4 (2026-06-22)
 * (tipp88) Evaluated and upgraded `@iobroker/adapter-core` dependency from 3.3.2 to 3.4.1.
 * (tipp88) Changed German adapter title in `io-package.json` to "Octopus Energy Monitor".
-
-### 0.6.3 (2026-06-11)
-* (tipp88) Fixed repository compliance issues by removing custom GitHub/NPM installation instructions from README.md.
-* (tipp88) Upgraded dependencies (axios to ^1.17.0, @tsconfig/node22 to ^22.0.5).
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
 
