@@ -68,7 +68,7 @@ To install this adapter in your ioBroker environment:
 Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
 ## Changelog
-### **WORK IN PROGRESS**
+### 0.7.0 (2026-07-13)
 * (tipp88) Implemented native historical database synchronization to automatically push 15-minute intervals directly to InfluxDB, SQL, or History instances.
 * (tipp88) Massively optimized Inexogy retroactive API polling by switching to the Discovergy `readings` endpoint, fetching 96 data points in a single request.
 * (tipp88) Fixed strict ioBroker JSON schema compliance bugs in `admin/jsonConfig.json` regarding dropdown instance filtering.
@@ -93,10 +93,6 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 ### 0.6.5 (2026-06-29)
 * (tipp88) Fixed ioBroker repository PR compliance issues (added API timeouts, refactored timer logic, removed dead config, implemented data retention, and updated translation keys).
 * (tipp88) Upgraded `@iobroker/types` devDependency to 7.2.2.
-
-### 0.6.4 (2026-06-22)
-* (tipp88) Evaluated and upgraded `@iobroker/adapter-core` dependency from 3.3.2 to 3.4.1.
-* (tipp88) Changed German adapter title in `io-package.json` to "Octopus Energy Monitor".
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
 
