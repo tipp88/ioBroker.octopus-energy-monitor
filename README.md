@@ -62,9 +62,13 @@ To install this adapter in your ioBroker environment:
    - **Grid Fees:** Input your local NT, HT, and ST grid fees. Use the checkbox to specify whether the input values are gross (including 19% VAT) or net.
    - **Configured Time Windows:** Define your local NT (low tariff) and HT (high tariff) times per month. Times that are not defined automatically fallback to ST (standard tariff). Windows must not overlap within the same month.
 
-Once configured, the adapter handles the rest! It sets an internal Cronjob scaling back 30 days every night. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
+Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
 ## Changelog
+### **WORK IN PROGRESS**
+* (tipp88) Fixed calculated meter reading (`octopus.info.meterReading`) state missing `kWh` unit
+* (tipp88) Fixed permissions in Dependabot auto-merge workflow (`issues: write`)
+
 ### 0.6.8 (2026-07-06)
 * (tipp88) Fixed `rate.name` from external API being used unsanitized in ioBroker object IDs.
 * (tipp88) Fixed `setSmartChargeStatus()` sending the sanitized device ID to Octopus API instead of original ID.
