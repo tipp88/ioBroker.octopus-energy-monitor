@@ -65,13 +65,15 @@ To install this adapter in your ioBroker environment:
 6. **History Database Sync (Optional):**
    - **Enable Database Synchronization:** Select your target ioBroker history adapter (e.g., InfluxDB). The adapter will automatically register 15-minute states and push raw interval data points retroactively into the selected database.
 
-Once configured, the adapter handles the rest! It sets an internal Cronjob scaling back 30 days every night. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
+Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
 ## Changelog
 ### **WORK IN PROGRESS**
 * (tipp88) Implemented native historical database synchronization to automatically push 15-minute intervals directly to InfluxDB, SQL, or History instances.
 * (tipp88) Massively optimized Inexogy retroactive API polling by switching to the Discovergy `readings` endpoint, fetching 96 data points in a single request.
 * (tipp88) Fixed strict ioBroker JSON schema compliance bugs in `admin/jsonConfig.json` regarding dropdown instance filtering.
+* (tipp88) Fixed calculated meter reading (`octopus.info.meterReading`) state missing `kWh` unit
+* (tipp88) Fixed permissions in Dependabot auto-merge workflow (`issues: write`)
 
 ### 0.6.8 (2026-07-06)
 * (tipp88) Fixed `rate.name` from external API being used unsanitized in ioBroker object IDs.

@@ -1927,6 +1927,9 @@ class EnergyCompare extends utils.Adapter {
 					'octopus.info.meterReading',
 					'Current Calculated Meter Reading',
 					parseFloat(calculatedReading.toFixed(3)),
+					'value',
+					'number',
+					'kWh',
 				);
 				this.log.debug(`Updated calculated meter reading: ${calculatedReading.toFixed(3)} kWh`);
 			}
