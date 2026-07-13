@@ -29,6 +29,7 @@ Its key purpose is identifying discrepancies in billing/measurement between your
 * **Smart Caching:** Minimizes API load by retroactively syncing only missing data points (30-day default).
 * **§14a EnWG Price Calculation:** Optional tariff calculation for controllable consumption devices (Steuerbare Verbrauchseinrichtung) with custom time windows (NT/HT) and automatic standard tariff (ST) fallback.
 * **Custom Billing Periods:** Aggregates and tracks energy consumption and costs based on your custom billing period start day (e.g., 18th to 17th) under the `octopus.periods` channel, split by standard rate slots (e.g. Go/Standard) with a static `current` folder for easy visualization.
+* **Database History Sync:** Native backend integration with InfluxDB, SQL, and History adapters to directly push and backfill raw 15-minute consumption intervals without bloating the ioBroker object tree.
 
 ---
 
@@ -61,11 +62,16 @@ To install this adapter in your ioBroker environment:
    - **Applicable From Date (YYYY-MM-DD):** Defines when the EnWG calculation should start. Changing this date (or grid fees/time windows) triggers an automatic retroactive recalculation of all historical data.
    - **Grid Fees:** Input your local NT, HT, and ST grid fees. Use the checkbox to specify whether the input values are gross (including 19% VAT) or net.
    - **Configured Time Windows:** Define your local NT (low tariff) and HT (high tariff) times per month. Times that are not defined automatically fallback to ST (standard tariff). Windows must not overlap within the same month.
+6. **History Database Sync (Optional):**
+   - **Enable Database Synchronization:** Select your target ioBroker history adapter (e.g., InfluxDB). The adapter will automatically register 15-minute states and push raw interval data points retroactively into the selected database.
 
 Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Implemented native historical database synchronization to automatically push 15-minute intervals directly to InfluxDB, SQL, or History instances.
+* (tipp88) Massively optimized Inexogy retroactive API polling by switching to the Discovergy `readings` endpoint, fetching 96 data points in a single request.
+* (tipp88) Fixed strict ioBroker JSON schema compliance bugs in `admin/jsonConfig.json` regarding dropdown instance filtering.
 * (tipp88) Fixed calculated meter reading (`octopus.info.meterReading`) state missing `kWh` unit
 * (tipp88) Fixed permissions in Dependabot auto-merge workflow (`issues: write`)
 

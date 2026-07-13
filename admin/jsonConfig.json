@@ -276,6 +276,29 @@
 					"md": 6,
 					"lg": 4,
 					"xl": 4
+				},
+				"enableHistorySync": {
+					"type": "checkbox",
+					"label": "Enable Database Synchronization (15-min Intervals)",
+					"help": "If enabled, 15-minute consumption values will be pushed directly to your selected history database (e.g. InfluxDB) without bloating the ioBroker object tree.",
+					"newLine": true,
+					"xs": 12,
+					"sm": 12,
+					"md": 6,
+					"lg": 4,
+					"xl": 4
+				},
+				"historyInstance": {
+					"type": "instance",
+					"label": "History Database Instance",
+					"adapter": "_dataSources",
+					"hidden": "!data.enableHistorySync",
+					"newLine": false,
+					"xs": 12,
+					"sm": 12,
+					"md": 6,
+					"lg": 4,
+					"xl": 4
 				}
 			}
 		},

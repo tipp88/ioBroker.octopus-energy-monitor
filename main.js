@@ -252,7 +252,49 @@ class EnergyCompare extends utils.Adapter {
 				'number',
 				'€/kWh',
 			);
-		} else {
+		}
+
+		if (this.config.enableHistorySync && this.config.historyInstance) {
+			await this.setObjectNotExistsAsync('octopus.info.15MinConsumption', {
+				type: 'state',
+				common: {
+					name: 'Octopus 15-Min Consumption',
+					type: 'number',
+					role: 'value',
+					unit: 'kWh',
+					read: true,
+					write: false,
+				},
+				native: {},
+			});
+			await this.setObjectNotExistsAsync('inexogy.info.15MinConsumption', {
+				type: 'state',
+				common: {
+					name: 'Inexogy 15-Min Consumption',
+					type: 'number',
+					role: 'value',
+					unit: 'kWh',
+					read: true,
+					write: false,
+				},
+				native: {},
+			});
+			// Optionally send enableHistory command just to be safe if the custom attribute is not caught initially
+			try {
+				await this.sendToAsync(this.config.historyInstance, 'enableHistory', {
+					id: `${this.namespace}.octopus.info.15MinConsumption`,
+					options: { changesOnly: false, debounce: 0, retention: 0, changesRelayout: false },
+				});
+				await this.sendToAsync(this.config.historyInstance, 'enableHistory', {
+					id: `${this.namespace}.inexogy.info.15MinConsumption`,
+					options: { changesOnly: false, debounce: 0, retention: 0, changesRelayout: false },
+				});
+			} catch (e) {
+				this.log.debug(`Could not auto-enable history via sendTo: ${e.message}`);
+			}
+		}
+
+		if (!this.enwgEnabled) {
 			await this.delObjectAsync('octopus.info.enwg.gridFeeStNet');
 			await this.delObjectAsync('octopus.info.enwg.gridFeeStGross');
 			await this.delObjectAsync('octopus.info.enwg.gridFeeNtNet');
@@ -858,6 +900,8 @@ class EnergyCompare extends utils.Adapter {
 			const fees = enwgActive ? this.getEnwgGridFees(this.config) : null;
 			const isSplit = (this.masterData.isTimeOfUse && this.masterData.rates.length > 1) || enwgActive;
 
+			const fetchRaw = isSplit || this.config.enableHistorySync;
+
 			const apiDomain = 'https://api.oeg-kraken.energy/v1/graphql/';
 			const dateString = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
 
@@ -866,9 +910,9 @@ class EnergyCompare extends utils.Adapter {
 					account(accountNumber: $accountNumber) {
 						property(id: $propertyId) {
 							measurements(
-								utilityFilters: {electricityFilters: {readingFrequencyType: ${isSplit ? 'RAW_INTERVAL' : 'DAY_INTERVAL'}, readingQuality: ACTUAL}}
+								utilityFilters: {electricityFilters: {readingFrequencyType: ${fetchRaw ? 'RAW_INTERVAL' : 'DAY_INTERVAL'}, readingQuality: ACTUAL}}
 								startOn: $date
-								first: ${isSplit ? 150 : 1}
+								first: ${fetchRaw ? 150 : 1}
 							) {
 								edges { node { ... on IntervalMeasurementType { endAt startAt value } } }
 							}
@@ -900,7 +944,7 @@ class EnergyCompare extends utils.Adapter {
 			const startMs = start.getTime();
 			const endMs = start.getTime() + 24 * 60 * 60 * 1000;
 
-			let result = { total: 0, slots: {} };
+			let result = { total: 0, slots: {}, rawIntervals: /** @type {Array<{ts: number, val: number}>} */ ([]) };
 			for (const r of this.masterData.rates) {
 				result.slots[r.name] = { consumption: 0, cost: 0, rateEuros: r.rateEuros };
 			}
@@ -920,6 +964,10 @@ class EnergyCompare extends utils.Adapter {
 
 				if (nodeMs < startMs || nodeMs >= endMs) {
 					continue;
+				}
+
+				if (fetchRaw) {
+					result.rawIntervals.push({ ts: nodeMs, val: nodeVal });
 				}
 
 				result.total += nodeVal;
@@ -1029,10 +1077,13 @@ class EnergyCompare extends utils.Adapter {
 		return null;
 	}
 
-	async fetchInexogyRangeConsumption(meterId, headers, fromDate, toDate) {
-		const url = `https://api.inexogy.com/public/v1/statistics?meterId=${meterId}&from=${fromDate.getTime()}&to=${toDate.getTime()}`;
+	async fetchInexogyReadings(meterId, headers, fromDate, toDate) {
+		const url = `https://api.inexogy.com/public/v1/readings?meterId=${meterId}&from=${fromDate.getTime()}&to=${toDate.getTime()}&resolution=fifteen_minutes`;
 		const res = await axios.get(url, { headers, validateStatus: () => true, timeout: AXIOS_TIMEOUT });
-		return this.parseInexogyData(res);
+		if (res.status === 200 && Array.isArray(res.data)) {
+			return res.data;
+		}
+		return null;
 	}
 
 	async fetchInexogy(start, end) {
@@ -1061,95 +1112,100 @@ class EnergyCompare extends utils.Adapter {
 			const meterId = this.inexogyMeterId;
 			const headers = { Authorization: `Basic ${basicAuth}` };
 
-			if (!isSplit) {
-				const total = await this.fetchInexogyRangeConsumption(meterId, headers, start, end);
-				if (total !== null) {
-					let slots = {};
-					slots[this.masterData.rates[0].name] = { consumption: total };
-					return { total, slots };
-				}
+			const readings = await this.fetchInexogyReadings(meterId, headers, start, end);
+			if (!readings || readings.length === 0) {
 				return null;
 			}
 
-			let result = { total: 0, slots: {} };
+			const fetchRaw = isSplit || this.config.enableHistorySync;
+			/** @type {{ total: number, slots: Object<string, any>, enwgSlots?: Object<string, any>, rawIntervals: Array<{ts: number, val: number}> }} */
+			let result = { total: 0, slots: {}, rawIntervals: [] };
+
+			// Calculate consumption per 15-min interval
+			// Readings provide the absolute 'energy' counter at the end of each slot.
+			// We need the diff between reading[i] and reading[i-1]
+			for (let i = 1; i < readings.length; i++) {
+				const prev = readings[i - 1];
+				const curr = readings[i];
+				if (!curr.values || !curr.values.energy || !prev.values || !prev.values.energy) {
+					continue;
+				}
+
+				const diffWh = Math.abs(curr.values.energy - prev.values.energy);
+				let kwh = diffWh / 10000000000;
+				if (diffWh > 0 && diffWh < 100000) {
+					kwh = diffWh / 1000;
+				}
+				const consumption = parseFloat(kwh.toFixed(3));
+				const ts = curr.time; // timestamp of the reading (end of the 15m slot)
+
+				if (fetchRaw) {
+					result.rawIntervals.push({ ts, val: consumption });
+				}
+				result.total += consumption;
+			}
+
+			// Inexogy requires fallback to total if no split is needed, but we keep the structure
+			for (const r of this.masterData.rates) {
+				result.slots[r.name] = { consumption: 0, cost: 0, rateEuros: r.rateEuros };
+			}
 
 			if (enwgActive) {
 				result.enwgSlots = {
-					NT: { consumption: 0 },
-					ST: { consumption: 0 },
-					HT: { consumption: 0 },
+					NT: { consumption: 0, costGross: 0, costNet: 0 },
+					ST: { consumption: 0, costGross: 0, costNet: 0 },
+					HT: { consumption: 0, costGross: 0, costNet: 0 },
 				};
-				const segments = this.getTariffSegmentsForDay(start, this.config);
-				for (const [tariffName, tariffSegs] of Object.entries(segments)) {
-					let consumption = 0;
-					for (const seg of tariffSegs) {
-						const sTime = new Date(start.getTime());
-						sTime.setHours(Math.floor(seg.fromMin / 60), seg.fromMin % 60, 0, 0);
-						const eTime = new Date(start.getTime());
-						if (seg.toMin === 1440) {
-							eTime.setHours(24, 0, 0, 0);
-						} else {
-							eTime.setHours(Math.floor(seg.toMin / 60), seg.toMin % 60, 0, 0);
+			}
+
+			if (!isSplit) {
+				result.slots[this.masterData.rates[0].name].consumption = result.total;
+				return result;
+			}
+
+			// We now need to distribute the rawIntervals into the time slots
+			// We iterate through the raw intervals and bin them based on their timestamp
+			for (const interval of result.rawIntervals) {
+				const slotDt = new Date(interval.ts - 1000); // use a time slightly before the end of the slot to correctly bucket it
+				const nodeHour = slotDt.getHours() + slotDt.getMinutes() / 60;
+
+				// Distribute into EnWG slots
+				if (enwgActive) {
+					const segments = this.getTariffSegmentsForDay(start, this.config);
+					for (const [tariffName, tariffSegs] of Object.entries(segments)) {
+						let matched = false;
+						for (const seg of tariffSegs) {
+							const fromH = seg.fromMin / 60;
+							const toH = seg.toMin / 60;
+							if (nodeHour >= fromH && nodeHour < toH) {
+								if (result.enwgSlots) {
+									result.enwgSlots[tariffName].consumption += interval.val;
+								}
+								matched = true;
+								break;
+							}
 						}
-						consumption += (await this.fetchInexogyRangeConsumption(meterId, headers, sTime, eTime)) || 0;
+						if (matched) {
+							break;
+						}
 					}
-					result.enwgSlots[tariffName] = { consumption };
-					result.total += consumption;
 				}
 
-				// Also compute standard slots for backwards compatibility/comparison
-				for (const rate of this.masterData.rates) {
-					const fromH = this.timeStrToHours(rate.from);
-					const toH = this.timeStrToHours(rate.to) || 24;
-					let consumption = 0;
-					if (fromH < toH) {
-						const sTime = new Date(start.getTime());
-						sTime.setHours(fromH, 0, 0, 0);
-						const eTime = new Date(start.getTime());
-						eTime.setHours(toH, 0, 0, 0);
-						consumption += (await this.fetchInexogyRangeConsumption(meterId, headers, sTime, eTime)) || 0;
-					} else {
-						const s1 = new Date(start.getTime());
-						s1.setHours(0, 0, 0, 0);
-						const e1 = new Date(start.getTime());
-						e1.setHours(toH, 0, 0, 0);
-						consumption += (await this.fetchInexogyRangeConsumption(meterId, headers, s1, e1)) || 0;
-
-						const s2 = new Date(start.getTime());
-						s2.setHours(fromH, 0, 0, 0);
-						const e2 = new Date(start.getTime());
-						e2.setHours(24, 0, 0, 0);
-						consumption += (await this.fetchInexogyRangeConsumption(meterId, headers, s2, e2)) || 0;
-					}
-					result.slots[rate.name] = { consumption };
-				}
-			} else {
+				// Distribute into standard slots
 				for (const rate of this.masterData.rates) {
 					const fromH = this.timeStrToHours(rate.from);
 					const toH = this.timeStrToHours(rate.to) || 24;
 
-					let consumption = 0;
+					let inSlot = false;
 					if (fromH < toH) {
-						const sTime = new Date(start.getTime());
-						sTime.setHours(fromH, 0, 0, 0);
-						const eTime = new Date(start.getTime());
-						eTime.setHours(toH, 0, 0, 0);
-						consumption += (await this.fetchInexogyRangeConsumption(meterId, headers, sTime, eTime)) || 0;
+						inSlot = nodeHour >= fromH && nodeHour < toH;
 					} else {
-						const s1 = new Date(start.getTime());
-						s1.setHours(0, 0, 0, 0);
-						const e1 = new Date(start.getTime());
-						e1.setHours(toH, 0, 0, 0);
-						consumption += (await this.fetchInexogyRangeConsumption(meterId, headers, s1, e1)) || 0;
-
-						const s2 = new Date(start.getTime());
-						s2.setHours(fromH, 0, 0, 0);
-						const e2 = new Date(start.getTime());
-						e2.setHours(24, 0, 0, 0);
-						consumption += (await this.fetchInexogyRangeConsumption(meterId, headers, s2, e2)) || 0;
+						inSlot = nodeHour >= fromH || nodeHour < toH;
 					}
-					result.slots[rate.name] = { consumption };
-					result.total += consumption;
+					if (inSlot) {
+						result.slots[rate.name].consumption += interval.val;
+						break;
+					}
 				}
 			}
 
@@ -1552,6 +1608,8 @@ class EnergyCompare extends utils.Adapter {
 			await this.fetchInexogyMasterData();
 		}
 
+		let historyPayloads = [];
+
 		try {
 			for (let i = syncDays; i >= 1; i--) {
 				const targetDate = new Date();
@@ -1711,6 +1769,15 @@ class EnergyCompare extends utils.Adapter {
 							}
 						}
 
+						if (this.config.enableHistorySync && this.config.historyInstance && octopusData.rawIntervals) {
+							for (const p of octopusData.rawIntervals) {
+								historyPayloads.push({
+									id: `${this.namespace}.octopus.info.15MinConsumption`,
+									state: { ts: p.ts, val: p.val, ack: true, q: 0 },
+								});
+							}
+						}
+
 						if (inexogyData) {
 							await this.writeStateObject(
 								`${basePathDay}.inexogy.dailyConsumption`,
@@ -1787,10 +1854,34 @@ class EnergyCompare extends utils.Adapter {
 									`Discrepancy for ${yearStr}-${monthStr}-${dayStr}! Diff: ${totalDiff.toFixed(3)} kWh`,
 								);
 							}
+
+							if (
+								this.config.enableHistorySync &&
+								this.config.historyInstance &&
+								inexogyData.rawIntervals
+							) {
+								for (const p of inexogyData.rawIntervals) {
+									historyPayloads.push({
+										id: `${this.namespace}.inexogy.info.15MinConsumption`,
+										state: { ts: p.ts, val: p.val, ack: true, q: 0 },
+									});
+								}
+							}
 						}
 					} else {
 						this.log.warn(`Skipping ${yearStr}-${monthStr}-${dayStr} due to missing Octopus data.`);
 					}
+				}
+			}
+
+			if (historyPayloads.length > 0) {
+				this.log.info(
+					`Pushing ${historyPayloads.length} interval data points directly to ${this.config.historyInstance}...`,
+				);
+				try {
+					await this.sendToAsync(this.config.historyInstance, 'storeState', historyPayloads);
+				} catch (e) {
+					this.log.error(`Failed to push history data to ${this.config.historyInstance}: ${e.message}`);
 				}
 			}
 
