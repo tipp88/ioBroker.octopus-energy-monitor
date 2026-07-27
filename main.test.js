@@ -162,13 +162,13 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 	describe('getEnwgGridFees', () => {
 		it('should calculate gross and net prices correctly when inputs are net', () => {
 			const config = {
-				enwgGridFeeSt: 0.10,
+				enwgGridFeeSt: 0.1,
 				enwgGridFeeNt: 0.05,
 				enwgGridFeeHt: 0.15,
 				enwgGridFeesAreGross: false,
 			};
 			const result = adapter.getEnwgGridFees(config);
-			expect(result.ST.net).to.equal(0.10);
+			expect(result.ST.net).to.equal(0.1);
 			expect(result.ST.gross).to.be.closeTo(0.119, 0.0001);
 			expect(result.NT.net).to.equal(0.05);
 			expect(result.NT.gross).to.be.closeTo(0.0595, 0.0001);
@@ -185,7 +185,7 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 			};
 			const result = adapter.getEnwgGridFees(config);
 			expect(result.ST.gross).to.equal(0.119);
-			expect(result.ST.net).to.be.closeTo(0.10, 0.0001);
+			expect(result.ST.net).to.be.closeTo(0.1, 0.0001);
 			expect(result.NT.gross).to.equal(0.0595);
 			expect(result.NT.net).to.be.closeTo(0.05, 0.0001);
 			expect(result.HT.gross).to.equal(0.1785);
@@ -194,13 +194,13 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 
 		it('should parse strings with dots or commas as decimal separators correctly', () => {
 			const config = {
-				enwgGridFeeSt: "0,10",
-				enwgGridFeeNt: "0.05",
-				enwgGridFeeHt: "  0,15  ",
+				enwgGridFeeSt: '0,10',
+				enwgGridFeeNt: '0.05',
+				enwgGridFeeHt: '  0,15  ',
 				enwgGridFeesAreGross: false,
 			};
 			const result = adapter.getEnwgGridFees(config);
-			expect(result.ST.net).to.equal(0.10);
+			expect(result.ST.net).to.equal(0.1);
 			expect(result.NT.net).to.equal(0.05);
 			expect(result.HT.net).to.equal(0.15);
 		});
@@ -325,7 +325,7 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 				inexogyPassword: '',
 				discrepancyThreshold: 0,
 				updateInterval: 0,
-				billingPeriodStartDay: 18
+				billingPeriodStartDay: 18,
 			};
 			anyAdapter.masterData = {
 				balance: 0,
@@ -338,9 +338,9 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 				dnoName: '',
 				rates: [
 					{ name: 'Go', rateEuros: 0.12 },
-					{ name: 'Standard', rateEuros: 0.24 }
+					{ name: 'Standard', rateEuros: 0.24 },
 				],
-				monthlyStandingCharge: 12.00
+				monthlyStandingCharge: 12.0,
 			};
 
 			anyAdapter.getAdapterObjectsAsync = async () => {
@@ -350,14 +350,16 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 						_id: key,
 						type: 'state',
 						common: { name: key, type: 'number', role: 'value', read: true, write: false },
-						native: {}
+						native: {},
 					};
 				}
 				return fullObjects;
 			};
-			anyAdapter.getStateAsync = async (id) => mockStates[id];
-			anyAdapter.setObjectNotExistsAsync = async (id) => ({ id });
-			anyAdapter.delObjectAsync = async (id) => { deletedObjects.push(id); };
+			anyAdapter.getStateAsync = async id => mockStates[id];
+			anyAdapter.setObjectNotExistsAsync = async id => ({ id });
+			anyAdapter.delObjectAsync = async id => {
+				deletedObjects.push(id);
+			};
 			anyAdapter.setStateAsync = async (id, state) => {
 				writtenStates[id] = state.val;
 				return id;
@@ -370,7 +372,9 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 			expect(writtenStates['octopus.periods.2026-04-18.endDate']).to.equal('2026-05-17');
 			expect(parseFloat(writtenStates['octopus.periods.2026-04-18.totalConsumption'].toFixed(0))).to.equal(10);
 			expect(parseFloat(writtenStates['octopus.periods.2026-04-18.totalCost'].toFixed(0))).to.equal(2);
-			expect(parseFloat(writtenStates['octopus.periods.2026-04-18.totalCostWithStandingCharge'].toFixed(0))).to.equal(14);
+			expect(
+				parseFloat(writtenStates['octopus.periods.2026-04-18.totalCostWithStandingCharge'].toFixed(0)),
+			).to.equal(14);
 			expect(parseFloat(writtenStates['octopus.periods.2026-04-18.goConsumption'].toFixed(0))).to.equal(4);
 			expect(parseFloat(writtenStates['octopus.periods.2026-04-18.goCost'].toFixed(1))).to.equal(0.5);
 			expect(parseFloat(writtenStates['octopus.periods.2026-04-18.standardConsumption'].toFixed(0))).to.equal(6);
@@ -382,15 +386,59 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 			yesterday.setHours(0, 0, 0, 0);
 			const daysInCurrentMonth = new Date(yesterday.getFullYear(), yesterday.getMonth() + 1, 0).getDate();
 			const elapsedDaysInMonth = yesterday.getDate();
-			const expectedMonthStandingCharge = 12.00 * (elapsedDaysInMonth / daysInCurrentMonth);
+			const expectedMonthStandingCharge = 12.0 * (elapsedDaysInMonth / daysInCurrentMonth);
 			const expectedMonthCostWithStandingCharge = 4.13333339 + expectedMonthStandingCharge;
 
 			expect(parseFloat(writtenStates['octopus.currentMonth.totalCostWithStandingCharge'].toFixed(2))).to.equal(
-				parseFloat(expectedMonthCostWithStandingCharge.toFixed(2))
+				parseFloat(expectedMonthCostWithStandingCharge.toFixed(2)),
 			);
 
 			// The 2026-05-18 period is incomplete, so it must NOT be written
 			expect(writtenStates['octopus.periods.2026-05-18.startDate']).to.be.undefined;
+		});
+	});
+
+	describe('source-independent history synchronization', () => {
+		it('should defer a missing Inexogy day without re-exporting cached Octopus data', () => {
+			const retryAfter = Date.now() + 60_000;
+			const decision = adapter.getDaySyncDecision(true, false, retryAfter);
+
+			expect(decision.shouldProcess).to.be.false;
+			expect(decision.exportOctopus).to.be.false;
+			expect(decision.exportInexogy).to.be.true;
+			expect(decision.retryDeferred).to.be.true;
+		});
+
+		it('should retry Inexogy after the backoff without re-exporting cached Octopus data', () => {
+			const retryAfter = Date.now() - 1;
+			const decision = adapter.getDaySyncDecision(true, false, retryAfter);
+
+			expect(decision.shouldProcess).to.be.true;
+			expect(decision.exportOctopus).to.be.false;
+			expect(decision.exportInexogy).to.be.true;
+			expect(decision.retryDeferred).to.be.false;
+		});
+
+		it('should recalculate cached EnWG data without re-exporting raw intervals', () => {
+			const decision = adapter.getDaySyncDecision(true, true, 0, true);
+
+			expect(decision.shouldProcess).to.be.true;
+			expect(decision.exportOctopus).to.be.false;
+			expect(decision.exportInexogy).to.be.false;
+		});
+
+		it('should retain only the requested day from an extended Inexogy response', () => {
+			const start = new Date('2026-07-23T22:00:00.000Z');
+			const end = new Date('2026-07-24T22:00:00.000Z');
+			const readings = [
+				{ time: start.getTime() - 1, values: { energy: 1 } },
+				{ time: start.getTime(), values: { energy: 2 } },
+				{ time: end.getTime(), values: { energy: 3 } },
+				{ time: end.getTime() + 1, values: { energy: 4 } },
+			];
+
+			const filtered = adapter.filterInexogyReadingsForRange(readings, start, end);
+			expect(filtered.map(reading => reading.values.energy)).to.deep.equal([2, 3]);
 		});
 	});
 });

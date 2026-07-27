@@ -3,6 +3,7 @@ const utils = require('@iobroker/adapter-core');
 const axios = require('axios');
 
 const AXIOS_TIMEOUT = 30000;
+const INEXOGY_HISTORY_RETRY_MS = 6 * 60 * 60 * 1000;
 
 class EnergyCompare extends utils.Adapter {
 	constructor(options) {
@@ -321,6 +322,17 @@ class EnergyCompare extends utils.Adapter {
 				type: 'state',
 				common: {
 					name: 'Inexogy Consumption History (JSON Array)',
+					type: 'string',
+					role: 'json',
+					read: true,
+					write: false,
+				},
+				native: {},
+			});
+			await this.setObjectNotExistsAsync('inexogy.info.historyRetryJson', {
+				type: 'state',
+				common: {
+					name: 'Inexogy Historical Retry Schedule',
 					type: 'string',
 					role: 'json',
 					read: true,
@@ -1113,6 +1125,15 @@ class EnergyCompare extends utils.Adapter {
 		return null;
 	}
 
+	filterInexogyReadingsForRange(readings, start, end) {
+		const startMs = start.getTime();
+		const endMs = end.getTime();
+		return readings.filter(reading => {
+			const timestamp = Number(reading?.time);
+			return Number.isFinite(timestamp) && timestamp >= startMs && timestamp <= endMs;
+		});
+	}
+
 	async fetchInexogy(start, end) {
 		try {
 			if (!this.masterData) {
@@ -1139,7 +1160,22 @@ class EnergyCompare extends utils.Adapter {
 			const meterId = this.inexogyMeterId;
 			const headers = { Authorization: `Basic ${basicAuth}` };
 
-			const readings = await this.fetchInexogyReadings(meterId, headers, start, end);
+			let readings = await this.fetchInexogyReadings(meterId, headers, start, end);
+			if (readings && readings.length === 0) {
+				const fallbackStart = new Date(start.getTime() - 24 * 60 * 60 * 1000);
+				const fallbackEnd = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+				this.log.info(
+					`Inexogy returned no readings for ${start.toISOString()} to ${end.toISOString()}; retrying with an extended range.`,
+				);
+				const fallbackReadings = await this.fetchInexogyReadings(meterId, headers, fallbackStart, fallbackEnd);
+				if (fallbackReadings) {
+					const filteredReadings = this.filterInexogyReadingsForRange(fallbackReadings, start, end);
+					this.log.debug(
+						`Inexogy extended-range fallback retained ${filteredReadings.length} readings for the requested day.`,
+					);
+					readings = filteredReadings;
+				}
+			}
 			if (!readings || readings.length === 0) {
 				return null;
 			}
@@ -1578,6 +1614,78 @@ class EnergyCompare extends utils.Adapter {
 		}
 	}
 
+	getDaySyncDecision(hasOctopus, hasInexogy, inexogyRetryAfter, forceRecalculation = false) {
+		const retryDeferred = hasOctopus && !hasInexogy && inexogyRetryAfter > Date.now();
+		return {
+			shouldProcess: forceRecalculation || (!retryDeferred && (!hasOctopus || !hasInexogy)),
+			exportOctopus: !hasOctopus,
+			exportInexogy: !hasInexogy,
+			retryDeferred,
+		};
+	}
+
+	async loadInexogyHistoryRetries() {
+		const state = await this.getStateAsync('inexogy.info.historyRetryJson');
+		if (!state || typeof state.val !== 'string' || !state.val) {
+			return {};
+		}
+		try {
+			const parsed = JSON.parse(state.val);
+			return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+		} catch (error) {
+			this.log.warn(`Could not parse Inexogy historical retry schedule; resetting it: ${error.message}`);
+			return {};
+		}
+	}
+
+	async loadCachedDayData(basePathDay, source, enwgActive) {
+		if (!this.masterData) {
+			return null;
+		}
+		const totalState = await this.getStateAsync(`${basePathDay}.${source}.dailyConsumption`);
+		if (!totalState || totalState.val === null) {
+			return null;
+		}
+
+		/** @type {{total: number, totalCost: number, slots: Record<string, {consumption: number, cost: number, rateEuros: number}>, rawIntervals: Array<{ts: number, val: number}>, enwgSlots: null | Record<string, {consumption: number, costGross: number, costNet: number}>}} */
+		const result = {
+			total: Number(totalState.val),
+			totalCost: 0,
+			slots: {},
+			rawIntervals: [],
+			enwgSlots: null,
+		};
+		if (source === 'octopus') {
+			result.totalCost = Number((await this.getStateAsync(`${basePathDay}.octopus.totalCost`))?.val) || 0;
+		}
+
+		for (const rate of this.masterData.rates) {
+			const safeName = this.sanitizeIdSegment(rate.name).toLowerCase();
+			result.slots[rate.name] = {
+				consumption:
+					Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Consumption`))?.val) || 0,
+				cost: Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Cost`))?.val) || 0,
+				rateEuros: rate.rateEuros,
+			};
+		}
+
+		if (enwgActive) {
+			result.enwgSlots = {};
+			for (const slotName of ['NT', 'ST', 'HT']) {
+				const safeName = slotName.toLowerCase();
+				result.enwgSlots[slotName] = {
+					consumption:
+						Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Consumption`))?.val) || 0,
+					costGross: Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Cost`))?.val) || 0,
+					costNet:
+						Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}CostNet`))?.val) || 0,
+				};
+			}
+		}
+
+		return result;
+	}
+
 	async syncData() {
 		const adapterObjects = await this.getAdapterObjectsAsync();
 		await this.cleanupLegacyHistory(adapterObjects);
@@ -1636,6 +1744,8 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		let historyPayloads = [];
+		const inexogyRetries = this.hasInexogy ? await this.loadInexogyHistoryRetries() : {};
+		let inexogyRetriesChanged = false;
 
 		try {
 			for (let i = syncDays; i >= 1; i--) {
@@ -1652,7 +1762,6 @@ class EnergyCompare extends utils.Adapter {
 				const basePathMonth = `${basePathYear}.${monthStr}`;
 				const basePathDay = `${basePathMonth}.${dayStr}`;
 
-				let isCached = false;
 				const checkOctopus = await this.getStateAsync(`${basePathDay}.octopus.dailyConsumption`);
 				const hasOctopus = !!(checkOctopus && checkOctopus.val !== null);
 
@@ -1662,14 +1771,21 @@ class EnergyCompare extends utils.Adapter {
 					hasInexogyData = !!(checkInexogy && checkInexogy.val !== null);
 				}
 
-				isCached = hasOctopus && hasInexogyData;
-
 				const enwgActive = this.isEnwgActiveForDate(targetDate, this.config);
-				if (this.enwgConfigChanged && enwgActive) {
-					isCached = false;
+				const dateKey = `${yearStr}-${monthStr}-${dayStr}`;
+				const syncDecision = this.getDaySyncDecision(
+					hasOctopus,
+					hasInexogyData,
+					Number(inexogyRetries[dateKey]) || 0,
+					this.enwgConfigChanged && enwgActive,
+				);
+				if (syncDecision.retryDeferred) {
+					this.log.debug(
+						`Deferring Inexogy history retry for ${dateKey} until ${new Date(Number(inexogyRetries[dateKey])).toISOString()}.`,
+					);
 				}
 
-				if (!isCached) {
+				if (syncDecision.shouldProcess) {
 					this.log.debug(`Syncing data for ${yearStr}-${monthStr}-${dayStr}...`);
 
 					// Create hierarchical folders
@@ -1706,10 +1822,17 @@ class EnergyCompare extends utils.Adapter {
 						});
 					}
 
-					const octopusData = await this.fetchOctopus(targetDate, endDate);
+					const forceRecalculation = this.enwgConfigChanged && enwgActive;
+					const octopusData =
+						!hasOctopus || forceRecalculation
+							? await this.fetchOctopus(targetDate, endDate)
+							: await this.loadCachedDayData(basePathDay, 'octopus', enwgActive);
 					let inexogyData = null;
 					if (this.hasInexogy) {
-						inexogyData = await this.fetchInexogy(targetDate, endDate);
+						inexogyData =
+							!hasInexogyData || forceRecalculation
+								? await this.fetchInexogy(targetDate, endDate)
+								: await this.loadCachedDayData(basePathDay, 'inexogy', enwgActive);
 					}
 
 					if (octopusData) {
@@ -1796,7 +1919,12 @@ class EnergyCompare extends utils.Adapter {
 							}
 						}
 
-						if (this.config.enableHistorySync && this.config.historyInstance && octopusData.rawIntervals) {
+						if (
+							syncDecision.exportOctopus &&
+							this.config.enableHistorySync &&
+							this.config.historyInstance &&
+							octopusData.rawIntervals
+						) {
 							for (const p of octopusData.rawIntervals) {
 								historyPayloads.push({
 									id: `${this.namespace}.octopus.info.15MinConsumption`,
@@ -1806,6 +1934,10 @@ class EnergyCompare extends utils.Adapter {
 						}
 
 						if (inexogyData) {
+							if (Object.hasOwn(inexogyRetries, dateKey)) {
+								delete inexogyRetries[dateKey];
+								inexogyRetriesChanged = true;
+							}
 							await this.writeStateObject(
 								`${basePathDay}.inexogy.dailyConsumption`,
 								'Daily Consumption',
@@ -1883,6 +2015,7 @@ class EnergyCompare extends utils.Adapter {
 							}
 
 							if (
+								syncDecision.exportInexogy &&
 								this.config.enableHistorySync &&
 								this.config.historyInstance &&
 								inexogyData.rawIntervals
@@ -1894,6 +2027,12 @@ class EnergyCompare extends utils.Adapter {
 									});
 								}
 							}
+						} else if (this.hasInexogy && !hasInexogyData) {
+							inexogyRetries[dateKey] = Date.now() + INEXOGY_HISTORY_RETRY_MS;
+							inexogyRetriesChanged = true;
+							this.log.warn(
+								`No Inexogy history available for ${dateKey}; next retry will be attempted in 6 hours.`,
+							);
 						}
 					} else {
 						this.log.warn(`Skipping ${yearStr}-${monthStr}-${dayStr} due to missing Octopus data.`);
@@ -1910,6 +2049,13 @@ class EnergyCompare extends utils.Adapter {
 				} catch (e) {
 					this.log.error(`Failed to push history data to ${this.config.historyInstance}: ${e.message}`);
 				}
+			}
+
+			if (inexogyRetriesChanged) {
+				await this.setStateAsync('inexogy.info.historyRetryJson', {
+					val: JSON.stringify(inexogyRetries),
+					ack: true,
+				});
 			}
 
 			// Reset config changed flag since we finished the sync
