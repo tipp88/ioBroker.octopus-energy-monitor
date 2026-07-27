@@ -10,7 +10,7 @@ updates:
       timezone: 'Europe/Berlin'
     open-pull-requests-limit: 15
     assignees:
-      - 'User'
+      - 'tipp88'
     versioning-strategy: 'increase'
     cooldown:
       default-days: 7
@@ -27,4 +27,4 @@ updates:
       timezone: 'Europe/Berlin'
     open-pull-requests-limit: 15
     assignees:
-      - 'User'
+      - 'tipp88'

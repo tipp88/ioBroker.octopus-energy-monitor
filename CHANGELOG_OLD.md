@@ -1,4 +1,8 @@
 # Older changes
+## 0.6.4 (2026-06-22)
+* (tipp88) Evaluated and upgraded `@iobroker/adapter-core` dependency from 3.3.2 to 3.4.1.
+* (tipp88) Changed German adapter title in `io-package.json` to "Octopus Energy Monitor".
+
 ## 0.6.3 (2026-06-11)
 * (tipp88) Fixed repository compliance issues by removing custom GitHub/NPM installation instructions from README.md.
 * (tipp88) Upgraded dependencies (axios to ^1.17.0, @tsconfig/node22 to ^22.0.5).
