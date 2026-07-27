@@ -1080,9 +1080,36 @@ class EnergyCompare extends utils.Adapter {
 	async fetchInexogyReadings(meterId, headers, fromDate, toDate) {
 		const url = `https://api.inexogy.com/public/v1/readings?meterId=${meterId}&from=${fromDate.getTime()}&to=${toDate.getTime()}&resolution=fifteen_minutes`;
 		const res = await axios.get(url, { headers, validateStatus: () => true, timeout: AXIOS_TIMEOUT });
+
+		const contentType = String(res.headers?.['content-type'] || 'unknown');
+		const payloadType = Array.isArray(res.data) ? 'array' : typeof res.data;
+		const readingCount = Array.isArray(res.data) ? res.data.length : 0;
+		this.log.debug(
+			`Inexogy readings response: from=${fromDate.toISOString()}, to=${toDate.toISOString()}, status=${res.status}, contentType=${contentType}, payloadType=${payloadType}, readings=${readingCount}.`,
+		);
+
 		if (res.status === 200 && Array.isArray(res.data)) {
+			if (res.data.length > 0) {
+				const firstReading = res.data[0];
+				const lastReading = res.data[res.data.length - 1];
+				const valueFields =
+					firstReading?.values && typeof firstReading.values === 'object'
+						? Object.keys(firstReading.values).sort().join(',')
+						: 'none';
+				this.log.debug(
+					`Inexogy readings range: firstTs=${String(firstReading?.time ?? 'missing')}, lastTs=${String(lastReading?.time ?? 'missing')}, valueFields=${valueFields}.`,
+				);
+			} else {
+				this.log.debug(
+					`Inexogy returned no readings for range ${fromDate.toISOString()} to ${toDate.toISOString()}.`,
+				);
+			}
 			return res.data;
 		}
+
+		this.log.warn(
+			`Inexogy readings request failed for range ${fromDate.toISOString()} to ${toDate.toISOString()}: status=${res.status}, contentType=${contentType}, payloadType=${payloadType}.`,
+		);
 		return null;
 	}
 

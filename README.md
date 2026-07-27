@@ -70,6 +70,8 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 ## Changelog
 ### **WORK IN PROGRESS**
 
+* (tipp88) Added privacy-safe debug diagnostics for Inexogy historical readings, including the requested UTC range, HTTP status, response type, reading count, timestamp range, and available value fields.
+
 ### 0.7.0 (2026-07-13)
 
 * (tipp88) Implemented native historical database synchronization to automatically push 15-minute intervals directly to InfluxDB, SQL, or History instances.
