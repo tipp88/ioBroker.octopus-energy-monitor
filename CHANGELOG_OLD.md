@@ -1,4 +1,8 @@
 # Older changes
+## 0.6.5 (2026-06-29)
+* (tipp88) Fixed ioBroker repository PR compliance issues (added API timeouts, refactored timer logic, removed dead config, implemented data retention, and updated translation keys).
+* (tipp88) Upgraded `@iobroker/types` devDependency to 7.2.2.
+
 ## 0.6.4 (2026-06-22)
 * (tipp88) Evaluated and upgraded `@iobroker/adapter-core` dependency from 3.3.2 to 3.4.1.
 * (tipp88) Changed German adapter title in `io-package.json` to "Octopus Energy Monitor".

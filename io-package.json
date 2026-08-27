@@ -1,8 +1,21 @@
 {
   "common": {
     "name": "octopus-energy-monitor",
-    "version": "0.7.0",
+    "version": "1.0.0",
     "news": {
+      "1.0.0": {
+        "en": "Fixed the three missing history database synchronization translations reported in issue #18.",
+        "de": "Die drei in Problem #18 gemeldeten fehlenden Übersetzungen für die Synchronisierung der Verlaufsdatenbank wurden behoben.",
+        "ru": "Исправлены три отсутствующих перевода синхронизации базы данных истории, о которых сообщалось в проблеме № 18.",
+        "pt": "Corrigidas as três traduções de sincronização do banco de dados de histórico que estavam faltando, conforme relatado no problema nº 18.",
+        "nl": "De drie ontbrekende vertalingen voor de synchronisatie van de geschiedenisdatabase, zoals gemeld in probleem #18, zijn gecorrigeerd.",
+        "fr": "Correction des trois traductions manquantes pour la synchronisation de la base de données historique signalées dans le problème n° 18.",
+        "it": "Risolti i tre problemi di sincronizzazione del database della cronologia segnalati nel problema n. 18.",
+        "es": "Se corrigieron las tres traducciones de sincronización de la base de datos de historial que faltaban y que se reportaron en el problema n.° 18.",
+        "pl": "Naprawiono trzy brakujące tłumaczenia synchronizacji bazy danych historii zgłoszone w problemie nr 18.",
+        "uk": "Виправлено три відсутні переклади синхронізації бази даних історії, про які повідомлялося у випуску №18.",
+        "zh-cn": "修复了问题 #18 中报告的三个缺失的历史数据库同步翻译。"
+      },
       "0.7.0": {
         "en": "Implemented native historical database synchronization to automatically push 15-minute intervals directly to InfluxDB, SQL, or History instances.\nMassively optimized Inexogy retroactive API polling by switching to the Discovergy `readings` endpoint, fetching 96 data points in a single request.\nFixed strict ioBroker JSON schema compliance bugs in `admin/jsonConfig.json` regarding dropdown instance filtering.\nFixed calculated meter reading (`octopus.info.meterReading`) state missing `kWh` unit\nFixed permissions in Dependabot auto-merge workflow (`issues: write`)",
         "de": "Implementierte eine native historische Datenbanksynchronisierung, um automatisch 15-Minuten-Intervalle direkt an InfluxDB-, SQL- oder History-Instanzen zu übertragen.\nDie rückwirkende API-Abfrage von Inexogy wurde massiv optimiert, indem auf den Discovergy-Endpunkt `readings` umgeschaltet wurde, wodurch 96 Datenpunkte in einer einzigen Anfrage abgerufen werden konnten.\nEs wurden Fehler in der Datei `admin/jsonConfig.json` behoben, die die strikte Einhaltung des ioBroker JSON-Schemas in Bezug auf die Filterung von Dropdown-Instanzen betrafen.\nDer berechnete Zählerstand (`octopus.info.meterReading`) wurde korrigiert; der Status „kWh“ fehlte.\nBerechtigungen im Dependabot-Auto-Merge-Workflow korrigiert (`issues: write`)",
@@ -80,19 +93,6 @@
         "pl": "Oceniono i zaktualizowano zależności `@iobroker/adapter-core` z wersji 3.3.2 do 3.4.1.\nZmieniono niemiecką nazwę adaptera w `io-package.json` na „Octopus Energy Monitor”.",
         "uk": "Оцінено та оновлено залежність `@iobroker/adapter-core` з версії 3.3.2 до 3.4.1.\nЗмінено назву адаптера німецькою мовою в `io-package.json` на \"Octopus Energy Monitor\".",
         "zh-cn": "对 `@iobroker/adapter-core` 依赖项进行了评估，并将其从 3.3.2 升级到 3.4.1。\n将 `io-package.json` 中的德语适配器标题更改为“Octopus Energy Monitor”。"
-      },
-      "0.6.3": {
-        "en": "Fixed repository compliance issues by removing custom GitHub/NPM installation instructions from README.md.\nUpgraded dependencies (axios to ^1.17.0, @tsconfig/node22 to ^22.0.5).",
-        "de": "Behebung von Compliance-Problemen im Repository durch Entfernen benutzerdefinierter GitHub/NPM-Installationsanweisungen aus README.md.\nVerbesserte Abhängigkeiten (axios zu ^1.17.0, @tsconfig/node22 zu ^22.0.5).",
-        "ru": "Устранение пользовательских инструкций по установке GitHub/NPM из README.md.\nОбновленные зависимости (axios to ^1.17.0, @tsconfig/node22 to ^22.0.5).",
-        "pt": "Problemas de conformidade com o repositório corrigidos removendo instruções de instalação personalizadas do GitHub/NPM de README.md.\nDependências atualizadas (axios para ^1.17.0, @tsconfig/node22 para ^22.0.5).",
-        "nl": "Fixed repository compliance problemen door het verwijderen van aangepaste GitHub/NPM installatie instructies van README.md.\nOpgewaardeerde afhankelijkheden (axio's tot ^17.0, @tsconfig/node22 tot ^22.0.5).",
-        "fr": "Correction des problèmes de conformité du dépôt en supprimant les instructions d'installation GitHub/NPM personnalisées de README.md.\nDes dépendances améliorées (axes à ^1.17,0, @tsconfig/node22 à ^22.0.5).",
-        "it": "Problemi di conformità del repository fissi rimuovendo le istruzioni di installazione personalizzate GitHub/NPM da README.md.\nDipendenze aggiornate (assios a ^1.17.0, @tsconfig/node22 a ^22.0.5).",
-        "es": "Problemas de cumplimiento de repositorios fijos eliminando instrucciones personalizadas de instalación GitHub/NPM de README.md.\nDependencias actualizadas (axios a ^1.17.0, @tsconfig/node22 a ^22.0.5).",
-        "pl": "Stałe kwestie zgodności repozytorium poprzez usunięcie własnych instrukcji instalacji GitHub / NPM z README.md.\nZmodernizowane zależności (axios do ^ 1.17.0, @ tsconfig / node22 do ^ 22.0.5).",
-        "uk": "Виправлено проблеми репозиторійної відповідності шляхом видалення користувацьких інструкцій встановлення GitHub/NPM від README.md.\nОновлення залежності (до ^1.17.0 @tsconfig/node22 до ^22.0.5).",
-        "zh-cn": "通过从 README.md 中删除自定义 GitHub/NPM 安装指令来解决固定寄存器遵守问题.\n升级依赖(xios to ^1.17.0, @tsconfig/node22 to ^22.0.5)."
       }
     },
     "titleLang": {

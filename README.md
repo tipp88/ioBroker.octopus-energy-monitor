@@ -68,7 +68,7 @@ To install this adapter in your ioBroker environment:
 Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
 ## Changelog
-### **WORK IN PROGRESS**
+### 1.0.0 (2026-08-27)
 * (tipp88) Fixed the three missing history database synchronization translations reported in issue #18.
 
 ### 0.7.0 (2026-07-13)
@@ -92,10 +92,6 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 
 ### 0.6.6 (2026-06-29)
 * (ioBroker-Bot) Adapter requires admin >= 7.8.23 now.
-
-### 0.6.5 (2026-06-29)
-* (tipp88) Fixed ioBroker repository PR compliance issues (added API timeouts, refactored timer logic, removed dead config, implemented data retention, and updated translation keys).
-* (tipp88) Upgraded `@iobroker/types` devDependency to 7.2.2.
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
 
