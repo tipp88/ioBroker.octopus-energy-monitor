@@ -1551,6 +1551,43 @@ class EnergyCompare extends utils.Adapter {
 		}
 	}
 
+	/**
+	 * Check whether daily consumption data for a specific day is already cached.
+	 * Days with 0 or missing consumption are considered not cached to allow retroactive updates
+	 * when smart meter data is delivered with a delay by the API provider.
+	 *
+	 * @param {ioBroker.State | null | undefined} checkOctopus Octopus state object
+	 * @param {ioBroker.State | null | undefined} checkInexogy Inexogy state object
+	 * @param {boolean} [hasInexogy] Whether Inexogy is configured
+	 * @param {boolean} [enwgConfigChanged] Whether EnWG settings changed
+	 * @param {boolean} [enwgActive] Whether EnWG is active for the target date
+	 * @returns {boolean} True if the day has cached data and does not need to be refetched
+	 */
+	isDayCached(checkOctopus, checkInexogy, hasInexogy = false, enwgConfigChanged = false, enwgActive = false) {
+		const hasOctopus = !!(
+			checkOctopus &&
+			checkOctopus.val !== null &&
+			checkOctopus.val !== undefined &&
+			Number(checkOctopus.val) > 0
+		);
+
+		let hasInexogyData = true;
+		if (hasInexogy) {
+			hasInexogyData = !!(
+				checkInexogy &&
+				checkInexogy.val !== null &&
+				checkInexogy.val !== undefined &&
+				Number(checkInexogy.val) > 0
+			);
+		}
+
+		let isCached = hasOctopus && hasInexogyData;
+		if (enwgConfigChanged && enwgActive) {
+			isCached = false;
+		}
+		return isCached;
+	}
+
 	async syncData() {
 		const adapterObjects = await this.getAdapterObjectsAsync();
 		await this.cleanupLegacyHistory(adapterObjects);
@@ -1625,22 +1662,19 @@ class EnergyCompare extends utils.Adapter {
 				const basePathMonth = `${basePathYear}.${monthStr}`;
 				const basePathDay = `${basePathMonth}.${dayStr}`;
 
-				let isCached = false;
 				const checkOctopus = await this.getStateAsync(`${basePathDay}.octopus.dailyConsumption`);
-				const hasOctopus = !!(checkOctopus && checkOctopus.val !== null);
-
-				let hasInexogyData = true;
-				if (this.hasInexogy) {
-					const checkInexogy = await this.getStateAsync(`${basePathDay}.inexogy.dailyConsumption`);
-					hasInexogyData = !!(checkInexogy && checkInexogy.val !== null);
-				}
-
-				isCached = hasOctopus && hasInexogyData;
+				const checkInexogy = this.hasInexogy
+					? await this.getStateAsync(`${basePathDay}.inexogy.dailyConsumption`)
+					: null;
 
 				const enwgActive = this.isEnwgActiveForDate(targetDate, this.config);
-				if (this.enwgConfigChanged && enwgActive) {
-					isCached = false;
-				}
+				const isCached = this.isDayCached(
+					checkOctopus,
+					checkInexogy,
+					this.hasInexogy,
+					this.enwgConfigChanged,
+					enwgActive,
+				);
 
 				if (!isCached) {
 					this.log.debug(`Syncing data for ${yearStr}-${monthStr}-${dayStr}...`);

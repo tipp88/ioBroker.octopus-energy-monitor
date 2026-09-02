@@ -393,4 +393,41 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 			expect(writtenStates['octopus.periods.2026-05-18.startDate']).to.be.undefined;
 		});
 	});
+
+	describe('isDayCached (Issue #31)', () => {
+		it('should return false if checkOctopus state is null or missing', () => {
+			expect(adapter.isDayCached(null, null, false)).to.be.false;
+			expect(adapter.isDayCached(undefined, null, false)).to.be.false;
+		});
+
+		it('should return false if Octopus consumption is 0 (delayed/missing data)', () => {
+			expect(adapter.isDayCached({ val: 0 }, null, false)).to.be.false;
+			expect(adapter.isDayCached({ val: '0' }, null, false)).to.be.false;
+			expect(adapter.isDayCached({ val: 0.0 }, null, false)).to.be.false;
+		});
+
+		it('should return true if Octopus consumption is > 0 and Inexogy is disabled', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, null, false)).to.be.true;
+			expect(adapter.isDayCached({ val: 0.001 }, null, false)).to.be.true;
+		});
+
+		it('should return false when Inexogy is enabled but has 0 or null consumption', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, null, true)).to.be.false;
+			expect(adapter.isDayCached({ val: 12.345 }, { val: 0 }, true)).to.be.false;
+			expect(adapter.isDayCached({ val: 12.345 }, { val: null }, true)).to.be.false;
+		});
+
+		it('should return true when both Octopus and Inexogy have consumption > 0', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, { val: 12.34 }, true)).to.be.true;
+		});
+
+		it('should return false if enwgConfigChanged is true and enwgActive is true', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, null, false, true, true)).to.be.false;
+		});
+
+		it('should return true if enwgConfigChanged is true but enwgActive is false', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, null, false, true, false)).to.be.true;
+		});
+	});
 });
+
