@@ -1,4 +1,7 @@
 # Older changes
+## 0.6.6 (2026-06-29)
+* (ioBroker-Bot) Adapter requires admin >= 7.8.23 now.
+
 ## 0.6.5 (2026-06-29)
 * (tipp88) Fixed ioBroker repository PR compliance issues (added API timeouts, refactored timer logic, removed dead config, implemented data retention, and updated translation keys).
 * (tipp88) Upgraded `@iobroker/types` devDependency to 7.2.2.

@@ -1,8 +1,21 @@
 {
   "common": {
     "name": "octopus-energy-monitor",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "news": {
+      "1.0.1": {
+        "en": "Fixed consumption data for previous days not updating automatically when initially retrieved with 0 kWh (Issue #31).\nUpgraded axios dependency to 1.20.0.\nUpgraded `@iobroker/testing` devDependency to 6.1.0.",
+        "de": "Behoben: Verbrauchsdaten früherer Tage werden beim ersten Abruf mit 0 kWh nicht automatisch aktualisiert (Ausgabe #31).\nAxios Dependency auf 1.20.0 erhöht.\n@iobroker /testing devDependency auf 6.1.0 aktualisiert.",
+        "ru": "Данные по фиксированному потреблению за предыдущие дни не обновляются автоматически при первоначальном получении 0 кВтч (выпуск #31).\nЗависимость axios обновлена до версии 1.20.0.\nОбновлено значение '@iobroker /testing `DevDependency до версии 6.1.0.",
+        "pt": "Os dados de consumo fixo dos dias anteriores não são atualizados automaticamente com 0 kWh (Edição #31).\nAtualizou a dependência axios para 1.20.0.\nAtualizou `@iobroker /testing` devDependency para 6.1.0.",
+        "nl": "Gegevens over het vaste verbruik van voorgaande dagen worden niet automatisch bijgewerkt wanneer ze voor het eerst werden opgehaald met 0 kWh (probleem #31).\nDe axios-afhankelijkheid is geüpgraded naar 1.20.0.\n`@iobroker /testing` devDependency geüpgraded naar 6.1.0.",
+        "fr": "Les données de consommation fixes des jours précédents ne sont pas mises à jour automatiquement à 0 kWh (numéro #31).\nDépendance à Axios améliorée à 1.20.0.\n@iobroker /testing `DevDependency a été mis à jour en 6.1.0.",
+        "it": "I dati sul consumo fisso dei giorni precedenti non si aggiornano automaticamente a 0 kWh (Numero #31).\nDipendenza axios aggiornata a 1.20.0.\nHa aggiornato `@iobroker /testing` devDependency a 6.1.0.",
+        "es": "Los datos de consumo fijo de días anteriores no se actualizaban automáticamente cuando se recuperaban con 0 kWh (número #31).\nSe actualizó la dependencia de Axios a 1.20.0.\nActuó `@iobroker /testing` DevDependency a 6.1.0.",
+        "pl": "Poprawiono dane dotyczące zużycia za poprzednie dni, które nie aktualizują się automatycznie po pobraniu z 0 kWh (Problem #31).\nZaktualizowano zależność axios do 1.20.0.\nUaktualniono `@iobroker /testing` DevDependency do 6.1.0.",
+        "uk": "Виправлені дані про споживання за попередні дні не оновлюються автоматично при початковому отриманні з 0 кВт/год (випуск #31).\nОновлена залежність від axios до 1.20.0.\nОновлено `@iobroker /тестування` DevDependency до 6.1.0.",
+        "zh-cn": "修复了最初使用 0 kWh 检索时前几天的消耗量数据不会自动更新的问题（问题 #31）。\n将 axios 依赖项升级到 1.20.0。\n将 @iobroker /testing devDependency 升级到 6.1.0。"
+      },
       "1.0.0": {
         "en": "Fixed the three missing history database synchronization translations reported in issue #18.",
         "de": "Die drei in Problem #18 gemeldeten fehlenden Übersetzungen für die Synchronisierung der Verlaufsdatenbank wurden behoben.",
@@ -80,19 +93,6 @@
         "pl": "Naprawiono problemy z przestrzeganiem przez repozytorium jOBroker PR (dodano timeout API, refactored timer logics, usunięto martwą konfigurację, wdrożono retencję danych i zaktualizowano klucze tłumaczeniowe).\nAktualizacja '@ iobroker / types' devendency do 7.2.2.",
         "uk": "Фіксований ioBroker репозиторійні питання відповідності PR (адресовані формати API, рефакторована логіка таймера, видалена мертва конфігурація, реалізована збереження даних та оновлені ключі перекладу).\nОновлення `@iobroker/types` devDependency до 7.2.2.",
         "zh-cn": "固定 ioBroker 寄存器 PR 合规性问题(添加 API 超时,重构定时器逻辑,删除死配置,执行数据保存,更新翻译密钥).\n将Xio经纪人/型号的依赖性提高到7.2.2."
-      },
-      "0.6.4": {
-        "en": "Evaluated and upgraded `@iobroker/adapter-core` dependency from 3.3.2 to 3.4.1.\nChanged German adapter title in `io-package.json` to \"Octopus Energy Monitor\".",
-        "de": "Die Abhängigkeit `@iobroker/adapter-core` wurde von Version 3.3.2 auf 3.4.1 evaluiert und aktualisiert.\nDer deutsche Adaptertitel in der `io-package.json` wurde in \"Octopus Energy Monitor\" geändert.",
-        "ru": "Проведена оценка и обновление зависимости `@iobroker/adapter-core` с версии 3.3.2 до 3.4.1.\nИзменено название немецкого адаптера в файле `io-package.json` на \"Octopus Energy Monitor\".",
-        "pt": "A dependência `@iobroker/adapter-core` foi avaliada e atualizada da versão 3.3.2 para a 3.4.1.\nAlterei o título do adaptador alemão em `io-package.json` para \"Octopus Energy Monitor\".",
-        "nl": "De afhankelijkheid `@iobroker/adapter-core` is geëvalueerd en geüpgraded van 3.3.2 naar 3.4.1.\nDe titel van de Duitse adapter in `io-package.json` is gewijzigd naar \"Octopus Energy Monitor\".",
-        "fr": "Évaluation et mise à niveau de la dépendance `@iobroker/adapter-core` de la version 3.3.2 à la version 3.4.1.\nLe titre de l'adaptateur allemand dans `io-package.json` a été modifié en « Octopus Energy Monitor ».",
-        "it": "È stata valutata e aggiornata la dipendenza `@iobroker/adapter-core` dalla versione 3.3.2 alla 3.4.1.\nIl titolo dell'adattatore tedesco nel file `io-package.json` è stato modificato in \"Octopus Energy Monitor\".",
-        "es": "Se evaluó y actualizó la dependencia `@iobroker/adapter-core` de la versión 3.3.2 a la 3.4.1.\nSe cambió el título del adaptador alemán en `io-package.json` a \"Octopus Energy Monitor\".",
-        "pl": "Oceniono i zaktualizowano zależności `@iobroker/adapter-core` z wersji 3.3.2 do 3.4.1.\nZmieniono niemiecką nazwę adaptera w `io-package.json` na „Octopus Energy Monitor”.",
-        "uk": "Оцінено та оновлено залежність `@iobroker/adapter-core` з версії 3.3.2 до 3.4.1.\nЗмінено назву адаптера німецькою мовою в `io-package.json` на \"Octopus Energy Monitor\".",
-        "zh-cn": "对 `@iobroker/adapter-core` 依赖项进行了评估，并将其从 3.3.2 升级到 3.4.1。\n将 `io-package.json` 中的德语适配器标题更改为“Octopus Energy Monitor”。"
       }
     },
     "titleLang": {
