@@ -71,6 +71,7 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 ### **WORK IN PROGRESS**
 * (tipp88) Fixed consumption data for previous days not updating automatically when initially retrieved with 0 kWh (Issue #31).
 * (tipp88) Upgraded axios dependency to 1.20.0.
+* (tipp88) Upgraded `@iobroker/testing` devDependency to 6.1.0.
 
 ### 1.0.0 (2026-08-27)
 * (tipp88) Fixed the three missing history database synchronization translations reported in issue #18.
