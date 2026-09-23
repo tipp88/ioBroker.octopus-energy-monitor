@@ -1,6 +1,7 @@
 'use strict';
 
 const { expect } = require('chai');
+const axios = require('axios');
 
 // Mock @iobroker/adapter-core so that requiring main.js doesn't boot the real ioBroker system
 // @ts-ignore
@@ -248,6 +249,47 @@ describe('Independent provider operation', () => {
 			expect(states['octopus.periods.current.totalConsumption'].val).to.equal(12);
 		} finally {
 			global.Date = RealDate;
+		}
+	});
+
+	it('logs Octopus GraphQL errors with their code, description and requested date', async () => {
+		const a = factory({});
+		const errors = [];
+		a.config = {
+			octopusAccount: 'A-TEST',
+			enableHistorySync: false,
+		};
+		a.masterData = {
+			propertyId: 'property-test',
+			isTimeOfUse: false,
+			rates: [{ name: 'Standard', rateEuros: 0.3 }],
+		};
+		a.octopusAuthToken = 'test-token';
+		a.log.error = message => errors.push(message);
+		const originalPost = axios.post;
+		axios.post = async () => ({
+			status: 200,
+			data: {
+				errors: [
+					{
+						message: 'Request was rate limited.',
+						extensions: {
+							errorCode: 'KT-CT-1199',
+							errorDescription: 'Too many requests.',
+						},
+					},
+				],
+			},
+		});
+
+		try {
+			const result = await a.fetchOctopus(new Date(2026, 8, 22), new Date(2026, 8, 23));
+			expect(result).to.equal(null);
+			expect(errors).to.deep.equal([
+				'Octopus usage API GraphQL error for 2026-09-22: KT-CT-1199: Too many requests.',
+			]);
+		} finally {
+			axios.post = originalPost;
 		}
 	});
 });

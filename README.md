@@ -73,6 +73,7 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 * (tipp88) Restricted comparisons to days with data from both providers.
 * (tipp88) Added Inexogy monthly, yearly and current billing-period consumption totals.
 * (tipp88) Fixed current billing-period aggregation on the first synchronization by prioritizing recent history.
+* (tipp88) Added diagnostics for Octopus usage API HTTP and GraphQL errors.
 
 ### 1.0.1 (2026-09-14)
 * (tipp88) Fixed consumption data for previous days not updating automatically when initially retrieved with 0 kWh (Issue #31).

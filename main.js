@@ -939,12 +939,33 @@ class EnergyCompare extends utils.Adapter {
 				timeout: AXIOS_TIMEOUT,
 			});
 
-			if (dataRes.status !== 200 || !dataRes.data?.data?.account) {
+			const graphqlErrors = Array.isArray(dataRes.data?.errors) ? dataRes.data.errors : [];
+			if (graphqlErrors.length > 0) {
+				const errorDetails = graphqlErrors
+					.map(error => {
+						const code = error?.extensions?.errorCode || error?.extensions?.code || 'UNKNOWN';
+						const description = error?.extensions?.errorDescription || error?.message || 'Unknown error';
+						return `${code}: ${description}`;
+					})
+					.join('; ');
+				this.log.error(`Octopus usage API GraphQL error for ${dateString}: ${errorDetails}`);
+			}
+
+			if (dataRes.status !== 200) {
+				this.log.error(`Octopus usage API HTTP error for ${dateString}: status ${dataRes.status}`);
+				return null;
+			}
+
+			if (!dataRes.data?.data?.account) {
+				if (graphqlErrors.length === 0) {
+					this.log.error(`Octopus usage API returned no account data for ${dateString}.`);
+				}
 				return null;
 			}
 
 			const edges = dataRes.data.data.account.property?.measurements?.edges;
 			if (!edges || edges.length === 0) {
+				this.log.debug(`Octopus usage API returned no measurements for ${dateString}.`);
 				return null;
 			}
 
