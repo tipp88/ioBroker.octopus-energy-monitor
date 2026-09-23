@@ -203,6 +203,53 @@ describe('Independent provider operation', () => {
 			global.Date = RealDate;
 		}
 	});
+
+	it('prioritizes the current Octopus period when the API limits the initial request burst', async () => {
+		const RealDate = global.Date;
+		// @ts-ignore
+		global.Date = function (...args) {
+			if (args.length === 0) {
+				return new RealDate(2026, 8, 23);
+			}
+			// @ts-ignore
+			return new RealDate(...args);
+		};
+		global.Date.now = () => new RealDate(2026, 8, 23).getTime();
+		global.Date.UTC = RealDate.UTC;
+		global.Date.parse = RealDate.parse;
+
+		try {
+			const { a, states, errors } = fixture(true, false, true);
+			a.config.billingPeriodStartDay = 17;
+			a.config.syncDays = 30;
+			let octopusRequests = 0;
+			const requestedDates = [];
+			a.fetchOctopus = async start => {
+				octopusRequests++;
+				requestedDates.push(
+					`${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`,
+				);
+				if (octopusRequests > 15) {
+					return null;
+				}
+				return {
+					total: 2,
+					totalCost: 0.6,
+					slots: { Standard: { consumption: 2, cost: 0.6 } },
+					rawIntervals: [],
+				};
+			};
+
+			await a.syncData();
+
+			expect(errors).to.deep.equal([]);
+			expect(requestedDates[0]).to.equal('2026-09-22');
+			expect(states['octopus.periods.2026-09-17.totalConsumption'].val).to.equal(12);
+			expect(states['octopus.periods.current.totalConsumption'].val).to.equal(12);
+		} finally {
+			global.Date = RealDate;
+		}
+	});
 });
 
 describe('§14a EnWG Tariff Resolution & Validation Tests', () => {

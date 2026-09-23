@@ -1703,7 +1703,8 @@ class EnergyCompare extends utils.Adapter {
 		this.syncInProgress = true;
 
 		try {
-			for (let i = syncDays; i >= 1; i--) {
+			// Fetch recent days first so the active billing period is available even if the API limits a startup burst.
+			for (let i = 1; i <= syncDays; i++) {
 				const targetDate = new Date();
 				targetDate.setDate(targetDate.getDate() - i);
 				targetDate.setHours(0, 0, 0, 0);
