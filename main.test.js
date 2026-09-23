@@ -170,6 +170,39 @@ describe('Independent provider operation', () => {
 			global.Date = RealDate;
 		}
 	});
+
+	it('aggregates cached Octopus days when the object view is incomplete after an instance start', async () => {
+		const RealDate = global.Date;
+		// @ts-ignore
+		global.Date = function (...args) {
+			if (args.length === 0) {
+				return new RealDate(2026, 8, 18);
+			}
+			// @ts-ignore
+			return new RealDate(...args);
+		};
+		global.Date.now = () => new RealDate(2026, 8, 18).getTime();
+		global.Date.UTC = RealDate.UTC;
+		global.Date.parse = RealDate.parse;
+
+		try {
+			const { a, states, calls, errors } = fixture(true, false, true);
+			a.config.billingPeriodStartDay = 17;
+			states['history.2026.09.17.octopus.dailyConsumption'] = { val: 2, ack: true };
+			states['history.2026.09.17.octopus.totalCost'] = { val: 0.6, ack: true };
+			states['history.2026.09.17.octopus.standardConsumption'] = { val: 2, ack: true };
+			states['history.2026.09.17.octopus.standardCost'] = { val: 0.6, ack: true };
+
+			await a.syncData();
+
+			expect(errors).to.deep.equal([]);
+			expect(calls.some(call => call.command === 'octopusDay')).to.equal(false);
+			expect(states['octopus.periods.2026-09-17.totalConsumption'].val).to.equal(2);
+			expect(states['octopus.periods.current.totalConsumption'].val).to.equal(2);
+		} finally {
+			global.Date = RealDate;
+		}
+	});
 });
 
 describe('§14a EnWG Tariff Resolution & Validation Tests', () => {

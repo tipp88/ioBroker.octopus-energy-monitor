@@ -72,7 +72,7 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 * (tipp88) Added standalone Inexogy and Octopus operation with independent data retrieval and history export.
 * (tipp88) Restricted comparisons to days with data from both providers.
 * (tipp88) Added Inexogy monthly, yearly and current billing-period consumption totals.
-* (tipp88) Fixed current billing-period aggregation on the first synchronization of an empty object tree.
+* (tipp88) Fixed current billing-period aggregation on the first synchronization after an instance start.
 
 ### 1.0.1 (2026-09-14)
 * (tipp88) Fixed consumption data for previous days not updating automatically when initially retrieved with 0 kWh (Issue #31).

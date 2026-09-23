@@ -1719,11 +1719,21 @@ class EnergyCompare extends utils.Adapter {
 				const basePathDay = `${basePathMonth}.${dayStr}`;
 
 				const checkOctopus = await this.getStateAsync(`${basePathDay}.octopus.dailyConsumption`);
+				if (checkOctopus?.val !== null && checkOctopus?.val !== undefined) {
+					this.syncObjectCache.set(`${this.namespace}.${basePathDay}.octopus.dailyConsumption`, {
+						type: 'state',
+					});
+				}
 				const hasOctopus = !this.hasOctopus || this.isDayCached(checkOctopus, null);
 
 				let hasInexogyData = true;
 				if (this.hasInexogy) {
 					const checkInexogy = await this.getStateAsync(`${basePathDay}.inexogy.dailyConsumption`);
+					if (checkInexogy?.val !== null && checkInexogy?.val !== undefined) {
+						this.syncObjectCache.set(`${this.namespace}.${basePathDay}.inexogy.dailyConsumption`, {
+							type: 'state',
+						});
+					}
 					hasInexogyData = this.isDayCached(checkInexogy, null);
 				}
 
