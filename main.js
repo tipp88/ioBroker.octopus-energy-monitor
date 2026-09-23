@@ -16,6 +16,7 @@ class EnergyCompare extends utils.Adapter {
 		this.inexogyMeterId = null;
 		this.syncObjectCache = new Map();
 		this.syncInProgress = false;
+		this.octopusRateLimited = false;
 	}
 
 	sanitizeIdSegment(raw) {
@@ -948,7 +949,25 @@ class EnergyCompare extends utils.Adapter {
 						return `${code}: ${description}`;
 					})
 					.join('; ');
-				this.log.error(`Octopus usage API GraphQL error for ${dateString}: ${errorDetails}`);
+				const isRateLimited = graphqlErrors.some(
+					error => (error?.extensions?.errorCode || error?.extensions?.code) === 'KT-CT-1199',
+				);
+				let rateLimitDetails = '';
+				if (isRateLimited) {
+					this.octopusRateLimited = true;
+					const headers = dataRes.headers || {};
+					const limitHeaders = [
+						['retry-after', headers['retry-after']],
+						['rate-limit', headers['ratelimit-limit'] || headers['x-ratelimit-limit']],
+						['rate-remaining', headers['ratelimit-remaining'] || headers['x-ratelimit-remaining']],
+						['rate-reset', headers['ratelimit-reset'] || headers['x-ratelimit-reset']],
+					]
+						.filter(([, value]) => value !== undefined)
+						.map(([name, value]) => `${name}=${value}`);
+					rateLimitDetails = ` Further Octopus requests are skipped until the next synchronization${limitHeaders.length > 0 ? ` (${limitHeaders.join(', ')})` : ''}.`;
+				}
+				this.log.error(`Octopus usage API GraphQL error for ${dateString}: ${errorDetails}${rateLimitDetails}`);
+				return null;
 			}
 
 			if (dataRes.status !== 200) {
@@ -1717,6 +1736,7 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		let historyPayloads = [];
+		this.octopusRateLimited = false;
 		this.syncObjectCache.clear();
 		for (const [id, object] of Object.entries(adapterObjects)) {
 			this.syncObjectCache.set(id, object);
@@ -1808,11 +1828,16 @@ class EnergyCompare extends utils.Adapter {
 					}
 
 					const forceRecalculation = this.enwgConfigChanged && enwgActive;
-					const octopusData = !this.hasOctopus
-						? null
-						: !hasOctopus || forceRecalculation
-							? await this.fetchOctopus(targetDate, endDate)
-							: await this.loadCachedDayData(basePathDay, 'octopus', enwgActive);
+					let octopusData = null;
+					if (this.hasOctopus) {
+						if (!hasOctopus || forceRecalculation) {
+							if (!this.octopusRateLimited) {
+								octopusData = await this.fetchOctopus(targetDate, endDate);
+							}
+						} else {
+							octopusData = await this.loadCachedDayData(basePathDay, 'octopus', enwgActive);
+						}
+					}
 					let inexogyData = null;
 					if (this.hasInexogy) {
 						inexogyData =

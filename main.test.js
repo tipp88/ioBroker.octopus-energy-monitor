@@ -269,6 +269,7 @@ describe('Independent provider operation', () => {
 		const originalPost = axios.post;
 		axios.post = async () => ({
 			status: 200,
+			headers: { 'retry-after': '30', 'x-ratelimit-remaining': '0' },
 			data: {
 				errors: [
 					{
@@ -285,12 +286,30 @@ describe('Independent provider operation', () => {
 		try {
 			const result = await a.fetchOctopus(new Date(2026, 8, 22), new Date(2026, 8, 23));
 			expect(result).to.equal(null);
+			expect(a.octopusRateLimited).to.equal(true);
 			expect(errors).to.deep.equal([
-				'Octopus usage API GraphQL error for 2026-09-22: KT-CT-1199: Too many requests.',
+				'Octopus usage API GraphQL error for 2026-09-22: KT-CT-1199: Too many requests. Further Octopus requests are skipped until the next synchronization (retry-after=30, rate-remaining=0).',
 			]);
 		} finally {
 			axios.post = originalPost;
 		}
+	});
+
+	it('stops further Octopus requests after a rate limit while continuing the sync', async () => {
+		const { a, calls, errors } = fixture(true, true, true);
+		a.config.syncDays = 5;
+		let octopusRequests = 0;
+		a.fetchOctopus = async () => {
+			octopusRequests++;
+			a.octopusRateLimited = true;
+			return null;
+		};
+
+		await a.syncData();
+
+		expect(errors).to.deep.equal([]);
+		expect(octopusRequests).to.equal(1);
+		expect(calls.filter(call => call.command === 'inexogyDay')).to.have.length(5);
 	});
 });
 
