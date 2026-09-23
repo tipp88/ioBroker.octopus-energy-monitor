@@ -24,7 +24,7 @@ const factory = require('./main.js');
 const adapter = factory({});
 
 describe('Independent provider operation', () => {
-	function fixture(octopus, inexogy) {
+	function fixture(octopus, inexogy, staleObjectView = false) {
 		const a = factory({});
 		const states = {};
 		const objects = {};
@@ -51,7 +51,7 @@ describe('Independent provider operation', () => {
 		a.setObjectNotExistsAsync = async (id, obj) => {
 			objects[a.namespace + '.' + id] = obj;
 		};
-		a.getAdapterObjectsAsync = async () => ({ ...objects });
+		a.getAdapterObjectsAsync = async () => (staleObjectView ? {} : { ...objects });
 		a.delObjectAsync = async () => {};
 		a.subscribeStates = () => {};
 		a.setTimeout = () => 1;
@@ -141,6 +141,34 @@ describe('Independent provider operation', () => {
 		const { a } = fixture(false, false);
 		await a.onReady();
 		expect(a.syncTimeout).to.equal(undefined);
+	});
+
+	it('aggregates the current Octopus period before newly created objects appear in the object view', async () => {
+		const RealDate = global.Date;
+		// @ts-ignore
+		global.Date = function (...args) {
+			if (args.length === 0) {
+				return new RealDate(2026, 8, 18);
+			}
+			// @ts-ignore
+			return new RealDate(...args);
+		};
+		global.Date.now = () => new RealDate(2026, 8, 18).getTime();
+		global.Date.UTC = RealDate.UTC;
+		global.Date.parse = RealDate.parse;
+
+		try {
+			const { a, states, errors } = fixture(true, false, true);
+			a.config.billingPeriodStartDay = 17;
+			await a.syncData();
+
+			expect(errors).to.deep.equal([]);
+			expect(states['octopus.periods.2026-09-17.totalConsumption'].val).to.equal(2);
+			expect(states['octopus.periods.current.totalConsumption'].val).to.equal(2);
+			expect(states['octopus.periods.current.startDate'].val).to.equal('2026-09-17');
+		} finally {
+			global.Date = RealDate;
+		}
 	});
 });
 

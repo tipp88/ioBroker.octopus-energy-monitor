@@ -14,6 +14,8 @@ class EnergyCompare extends utils.Adapter {
 		this.masterData = null;
 		this.octopusAuthToken = null;
 		this.inexogyMeterId = null;
+		this.syncObjectCache = new Map();
+		this.syncInProgress = false;
 	}
 
 	sanitizeIdSegment(raw) {
@@ -353,6 +355,10 @@ class EnergyCompare extends utils.Adapter {
 			common: { name, type, role, unit, read: true, write: false },
 			native: {},
 		});
+		if (this.syncInProgress) {
+			const fullId = id.startsWith(`${this.namespace}.`) ? id : `${this.namespace}.${id}`;
+			this.syncObjectCache.set(fullId, { type: 'state' });
+		}
 		await this.setStateAsync(id, { val: value, ack: true });
 	}
 
@@ -1690,6 +1696,11 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		let historyPayloads = [];
+		this.syncObjectCache.clear();
+		for (const [id, object] of Object.entries(adapterObjects)) {
+			this.syncObjectCache.set(id, object);
+		}
+		this.syncInProgress = true;
 
 		try {
 			for (let i = syncDays; i >= 1; i--) {
@@ -1986,7 +1997,8 @@ class EnergyCompare extends utils.Adapter {
 			this.enwgConfigChanged = false;
 
 			// Aggregate hierarchical data
-			const updatedObjects = await this.getAdapterObjectsAsync();
+			const storedObjects = await this.getAdapterObjectsAsync();
+			const updatedObjects = { ...storedObjects, ...Object.fromEntries(this.syncObjectCache) };
 			if (this.hasOctopus) {
 				await this.aggregateHistory(updatedObjects);
 			}
@@ -2003,7 +2015,7 @@ class EnergyCompare extends utils.Adapter {
 				let totalSinceLastReading = 0;
 				const historyPrefixForSum = `${this.namespace}.history.`;
 
-				for (const id of Object.keys(adapterObjects)) {
+				for (const id of Object.keys(updatedObjects)) {
 					if (id.startsWith(historyPrefixForSum)) {
 						const relativeId = id.substring(historyPrefixForSum.length);
 						const parts = relativeId.split('.');
@@ -2038,9 +2050,12 @@ class EnergyCompare extends utils.Adapter {
 			}
 
 			// 4. Apply data retention
-			await this.applyDataRetention(adapterObjects);
+			await this.applyDataRetention(updatedObjects);
 		} catch (error) {
 			this.log.error(`Error during syncData: ${error.message}`);
+		} finally {
+			this.syncInProgress = false;
+			this.syncObjectCache.clear();
 		}
 	}
 
