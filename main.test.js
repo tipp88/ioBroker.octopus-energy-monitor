@@ -23,6 +23,128 @@ require.cache[require.resolve('@iobroker/adapter-core')] = {
 const factory = require('./main.js');
 const adapter = factory({});
 
+describe('Independent provider operation', () => {
+	function fixture(octopus, inexogy) {
+		const a = factory({});
+		const states = {};
+		const objects = {};
+		const calls = [];
+		const errors = [];
+		a.namespace = 'octopus-energy-monitor.0';
+		a.config = {
+			octopusEmail: octopus ? 'test' : '',
+			octopusPassword: octopus ? 'test' : '',
+			inexogyEmail: inexogy ? 'test' : '',
+			inexogyPassword: inexogy ? 'test' : '',
+			syncDays: 1,
+			enableHistorySync: true,
+			historyInstance: 'influxdb.0',
+		};
+		a.hasOctopus = octopus;
+		a.hasInexogy = inexogy;
+		a.log.error = message => errors.push(message);
+		const local = id => id.replace(a.namespace + '.', '');
+		a.getStateAsync = async id => states[local(id)] || null;
+		a.setStateAsync = async (id, state) => {
+			states[local(id)] = state;
+		};
+		a.setObjectNotExistsAsync = async (id, obj) => {
+			objects[a.namespace + '.' + id] = obj;
+		};
+		a.getAdapterObjectsAsync = async () => ({ ...objects });
+		a.delObjectAsync = async () => {};
+		a.subscribeStates = () => {};
+		a.setTimeout = () => 1;
+		a.sendToAsync = async (target, command, payload) => {
+			calls.push({ command, payload });
+			return { success: true };
+		};
+		a.fetchOctopusMasterData = async () => {
+			calls.push({ command: 'octopusMaster' });
+			a.masterData = { rates: [{ name: 'Standard', rateEuros: 0.3 }], isTimeOfUse: false };
+			return a.masterData;
+		};
+		a.fetchOctopusDevices = async () => {};
+		a.fetchOctopusMeterReadings = async () => null;
+		a.fetchInexogyMasterData = async () => {
+			a.inexogyMeterId = 'test-meter';
+		};
+		a.fetchOctopus = async () => {
+			calls.push({ command: 'octopusDay' });
+			if (!a.masterData) return null;
+			return {
+				total: 2,
+				totalCost: 0.6,
+				slots: { Standard: { consumption: 2, cost: 0.6 } },
+				rawIntervals: [{ ts: 1, val: 2 }],
+			};
+		};
+		a.fetchInexogyReadings = async (_, __, start) => {
+			calls.push({ command: 'inexogyDay' });
+			return [
+				{ time: start.getTime(), values: { energy: 10000000000 } },
+				{ time: start.getTime() + 900000, values: { energy: 30000000000 } },
+			];
+		};
+		return { a, states, objects, calls, errors };
+	}
+
+	for (const [octopus, inexogy] of [
+		[true, false],
+		[false, true],
+		[true, true],
+	]) {
+		it(`starts and synchronizes with Octopus=${octopus}, Inexogy=${inexogy}`, async () => {
+			const { a, states, calls, objects, errors } = fixture(octopus, inexogy);
+			await a.onReady();
+			expect(a.syncTimeout).to.equal(1);
+			await a.syncData();
+			expect(errors).to.deep.equal([]);
+			const payload = calls.find(call => call.command === 'storeState').payload;
+			expect(payload.some(point => point.id.includes('.octopus.'))).to.equal(octopus);
+			expect(payload.some(point => point.id.includes('.inexogy.'))).to.equal(inexogy);
+			expect(Object.keys(states).some(id => id.includes('.comparison.'))).to.equal(octopus && inexogy);
+			if (!octopus) {
+				expect(calls.some(call => call.command.startsWith('octopus'))).to.equal(false);
+				expect(Object.keys(objects).some(id => id.includes('.octopus.'))).to.equal(false);
+				expect(states['inexogy.currentMonth.totalConsumption'].val).to.be.a('number');
+				expect(JSON.parse(states['inexogy.historyJson'].val)[0].total).to.equal(2);
+			}
+			const exportsBefore = calls.filter(call => call.command === 'storeState').length;
+			await a.syncData();
+			expect(calls.filter(call => call.command === 'storeState')).to.have.length(exportsBefore);
+		});
+	}
+
+	it('continues Inexogy when Octopus master data is unavailable', async () => {
+		const { a, states, calls, errors } = fixture(true, true);
+		a.fetchOctopusMasterData = async () => null;
+		await a.syncData();
+		expect(errors).to.deep.equal([]);
+		expect(Object.keys(states).some(id => id.endsWith('.inexogy.dailyConsumption'))).to.equal(true);
+		expect(Object.keys(states).some(id => id.includes('.comparison.'))).to.equal(false);
+		expect(
+			calls.find(call => call.command === 'storeState').payload.every(point => point.id.includes('.inexogy.')),
+		).to.equal(true);
+	});
+
+	it('continues Octopus when Inexogy returns no readings and persists the backoff', async () => {
+		const { a, calls, states, errors } = fixture(true, true);
+		a.fetchInexogyReadings = async () => [];
+		await a.syncData();
+		expect(errors).to.deep.equal([]);
+		expect(Object.keys(JSON.parse(states['inexogy.info.historyRetryJson'].val))).to.have.length(1);
+		await a.syncData();
+		expect(calls.filter(call => call.command === 'storeState')).to.have.length(1);
+	});
+
+	it('does not schedule synchronization without any complete credentials', async () => {
+		const { a } = fixture(false, false);
+		await a.onReady();
+		expect(a.syncTimeout).to.equal(undefined);
+	});
+});
+
 describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 	describe('validateEnwgConfig', () => {
 		it('should return valid if EnWG is disabled', () => {
@@ -439,6 +561,42 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 
 			const filtered = adapter.filterInexogyReadingsForRange(readings, start, end);
 			expect(filtered.map(reading => reading.values.energy)).to.deep.equal([2, 3]);
+		});
+	});
+
+	describe('isDayCached (Issue #31)', () => {
+		it('should return false if checkOctopus state is null or missing', () => {
+			expect(adapter.isDayCached(null, null, false)).to.be.false;
+			expect(adapter.isDayCached(undefined, null, false)).to.be.false;
+		});
+
+		it('should return false if Octopus consumption is 0 (delayed/missing data)', () => {
+			expect(adapter.isDayCached({ val: 0 }, null, false)).to.be.false;
+			expect(adapter.isDayCached({ val: '0' }, null, false)).to.be.false;
+			expect(adapter.isDayCached({ val: 0.0 }, null, false)).to.be.false;
+		});
+
+		it('should return true if Octopus consumption is > 0 and Inexogy is disabled', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, null, false)).to.be.true;
+			expect(adapter.isDayCached({ val: 0.001 }, null, false)).to.be.true;
+		});
+
+		it('should return false when Inexogy is enabled but has 0 or null consumption', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, null, true)).to.be.false;
+			expect(adapter.isDayCached({ val: 12.345 }, { val: 0 }, true)).to.be.false;
+			expect(adapter.isDayCached({ val: 12.345 }, { val: null }, true)).to.be.false;
+		});
+
+		it('should return true when both Octopus and Inexogy have consumption > 0', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, { val: 12.34 }, true)).to.be.true;
+		});
+
+		it('should return false if enwgConfigChanged is true and enwgActive is true', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, null, false, true, true)).to.be.false;
+		});
+
+		it('should return true if enwgConfigChanged is true but enwgActive is false', () => {
+			expect(adapter.isDayCached({ val: 12.345 }, null, false, true, false)).to.be.true;
 		});
 	});
 });

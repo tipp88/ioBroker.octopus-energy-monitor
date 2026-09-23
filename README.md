@@ -72,9 +72,38 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 
 ### **WORK IN PROGRESS**
 
+- (tipp88) Added independent Octopus-only, Inexogy-only and combined operation. At least one complete email/password pair is required; only configured providers are queried.
+- (tipp88) Removed the dependency of Inexogy readings, daily history and database export on Octopus credentials, tariffs and successful Octopus API responses.
+- (tipp88) Comparisons are calculated only when both configured providers have data for the same day. Cached data from the other provider can be reused.
+- (tipp88) Added Inexogy consumption totals at `history.YYYY.inexogy.totalConsumption`, `history.YYYY.MM.inexogy.totalConsumption`, `inexogy.currentMonth.totalConsumption` and `inexogy.periods.current` (start date, end date and consumption).
+- (tipp88) Retained the master fix for delayed zero-consumption days, the dev Inexogy diagnostics, extended-range fallback and persistent six-hour retry schedule. Daily query boundaries now follow local calendar midnights, including daylight-saving changes.
+- (tipp88) Added regression tests for all three provider modes, missing credentials, independent operation during provider failures and avoiding duplicate exports on subsequent syncs.
+
+#### Operating modes and limitations (WIP)
+
+Configure credentials only for the provider(s) you want to use. Inexogy-only operation provides meter metadata, live meter readings, daily consumption, history JSON, the consumption totals listed above and optional database export. Octopus credentials are not required. In combined mode an unavailable Octopus API no longer prevents Inexogy data from being stored.
+
+Octopus tariff costs, standing charges, EV controls and the calculated Octopus meter reading require Octopus. Inexogy-only mode does not invent electricity prices or total electricity costs. Configured EnWG time windows can still split Inexogy consumption; Octopus Go/Standard slots require available Octopus tariff metadata.
+
+Inexogy totals sum the available daily values, so a missing day makes these totals incomplete. The current billing period uses the configured billing-period start day; historical Inexogy billing-period folders are not generated. Existing objects from previously enabled providers are retained when changing modes, but disabled providers are not queried or exported.
+
+Only missing/zero-consumption source days are normally fetched again. Empty Inexogy responses are retried with a wider range, followed by a persistent six-hour delay if still unavailable. Zero-consumption days remain eligible for later refresh according to the master fix for delayed meter data.
+
+#### Earlier development changes
+
 - (tipp88) Added privacy-safe debug diagnostics for Inexogy historical readings, including the requested UTC range, HTTP status, response type, reading count, timestamp range, and available value fields.
 - (tipp88) Decoupled Octopus and Inexogy history synchronization so a missing source no longer re-exports cached intervals from the other source.
 - (tipp88) Added an extended-range fallback for empty Inexogy day responses and a persistent six-hour retry backoff for dates that remain unavailable.
+
+### 1.0.1 (2026-09-14)
+
+- (tipp88) Fixed consumption data for previous days not updating automatically when initially retrieved with 0 kWh (Issue #31).
+- (tipp88) Upgraded axios dependency to 1.20.0.
+- (tipp88) Upgraded `@iobroker/testing` devDependency to 6.1.0.
+
+### 1.0.0 (2026-08-27)
+
+- (tipp88) Fixed the three missing history database synchronization translations reported in issue #18.
 
 ### 0.7.0 (2026-07-13)
 

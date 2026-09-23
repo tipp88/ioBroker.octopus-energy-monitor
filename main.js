@@ -27,11 +27,14 @@ class EnergyCompare extends utils.Adapter {
 		this.hasOctopus = !!(this.config.octopusEmail && this.config.octopusPassword);
 		this.hasInexogy = !!(this.config.inexogyEmail && this.config.inexogyPassword);
 
-		if (!this.hasOctopus) {
-			this.log.warn('Octopus credentials missing. Adapter requires at least Octopus credentials.');
+		if (!this.hasOctopus && !this.hasInexogy) {
+			this.log.warn('Configure complete credentials for Octopus or Inexogy to start the adapter.');
 			return;
 		}
 
+		this.log.info(
+			`Active sources: ${[this.hasOctopus && 'Octopus', this.hasInexogy && 'Inexogy'].filter(Boolean).join(', ')}`,
+		);
 		if (!this.hasInexogy) {
 			this.log.info('Inexogy credentials missing. Adapter will run in standalone mode (Octopus only).');
 		}
@@ -58,6 +61,12 @@ class EnergyCompare extends utils.Adapter {
 
 		this.enwgConfigChanged = false;
 		if (this.enwgEnabled) {
+			const hashId = `${this.hasOctopus ? 'octopus' : 'inexogy'}.info.enwgConfigHash`;
+			await this.setObjectNotExistsAsync(hashId, {
+				type: 'state',
+				common: { name: 'EnWG Config Hash', type: 'string', role: 'text', read: true, write: false },
+				native: {},
+			});
 			const currentHashObj = {
 				enabled: this.config.enwgEnabled,
 				startDate: this.config.enwgStartDate,
@@ -68,13 +77,13 @@ class EnergyCompare extends utils.Adapter {
 				timeWindows: this.config.enwgTimeWindows,
 			};
 			const currentHash = JSON.stringify(currentHashObj);
-			const storedHashState = await this.getStateAsync('octopus.info.enwgConfigHash');
+			const storedHashState = await this.getStateAsync(hashId);
 			if (!storedHashState || storedHashState.val !== currentHash) {
 				this.log.info(
 					'§14a EnWG settings changed or not initialized. Forcing retroactive recalculation of history data.',
 				);
 				this.enwgConfigChanged = true;
-				await this.setStateAsync('octopus.info.enwgConfigHash', { val: currentHash, ack: true });
+				await this.setStateAsync(hashId, { val: currentHash, ack: true });
 			}
 		}
 
@@ -95,8 +104,10 @@ class EnergyCompare extends utils.Adapter {
 			);
 		};
 
-		this.subscribeStates('octopus.devices.*.smartChargeActive');
-		this.subscribeStates('octopus.devices.*.refresh');
+		if (this.hasOctopus) {
+			this.subscribeStates('octopus.devices.*.smartChargeActive');
+			this.subscribeStates('octopus.devices.*.refresh');
+		}
 
 		this.syncTimeout = this.setTimeout(async () => {
 			await this.syncData();
@@ -126,176 +137,166 @@ class EnergyCompare extends utils.Adapter {
 			common: { name: 'Energy History' },
 			native: {},
 		});
-		await this.setObjectNotExistsAsync('octopus', {
-			type: 'device',
-			common: { name: 'Octopus Energy' },
-			native: {},
-		});
-		await this.setObjectNotExistsAsync('octopus.info', {
-			type: 'channel',
-			common: { name: 'Octopus Master Data' },
-			native: {},
-		});
-		await this.setObjectNotExistsAsync('octopus.info.rates', {
-			type: 'channel',
-			common: { name: 'Octopus Rates' },
-			native: {},
-		});
-		await this.setObjectNotExistsAsync('octopus.currentMonth', {
-			type: 'channel',
-			common: { name: 'Current Month Aggregation' },
-			native: {},
-		});
-		await this.setObjectNotExistsAsync('octopus.periods', {
-			type: 'channel',
-			common: { name: 'Billing Periods' },
-			native: {},
-		});
-		await this.setObjectNotExistsAsync('octopus.periods.current', {
-			type: 'channel',
-			common: { name: 'Current Billing Period' },
-			native: {},
-		});
-
-		// Clean up legacy currentPeriod/lastPeriod objects
-		const legacyPeriodStates = [
-			'octopus.currentPeriod.startDate',
-			'octopus.currentPeriod.endDate',
-			'octopus.currentPeriod.totalConsumption',
-			'octopus.currentPeriod.totalCost',
-			'octopus.currentPeriod',
-			'octopus.lastPeriod.startDate',
-			'octopus.lastPeriod.endDate',
-			'octopus.lastPeriod.totalConsumption',
-			'octopus.lastPeriod.totalCost',
-			'octopus.lastPeriod',
-		];
-		for (const stateId of legacyPeriodStates) {
-			await this.delObjectAsync(stateId);
-		}
-
-		await this.setObjectNotExistsAsync('octopus.historyJson', {
-			type: 'state',
-			common: {
-				name: 'Octopus Consumption History (JSON Array)',
-				type: 'string',
-				role: 'json',
-				read: true,
-				write: false,
-			},
-			native: {},
-		});
-
-		await this.setObjectNotExistsAsync('octopus.info.enwgConfigHash', {
-			type: 'state',
-			common: {
-				name: 'EnWG Config Hash',
-				type: 'string',
-				role: 'text',
-				read: true,
-				write: false,
-			},
-			native: {},
-		});
-
-		if (this.enwgEnabled) {
-			await this.setObjectNotExistsAsync('octopus.info.enwg', {
+		if (this.hasOctopus) {
+			await this.setObjectNotExistsAsync('octopus', {
+				type: 'device',
+				common: { name: 'Octopus Energy' },
+				native: {},
+			});
+			await this.setObjectNotExistsAsync('octopus.info', {
 				type: 'channel',
-				common: { name: '§14a EnWG Info' },
+				common: { name: 'Octopus Master Data' },
 				native: {},
 			});
-			const fees = this.getEnwgGridFees(this.config);
-			await this.writeStateObject(
-				'octopus.info.enwg.gridFeeStNet',
-				'ST Grid Fee Net',
-				fees.ST.net,
-				'value',
-				'number',
-				'€/kWh',
-			);
-			await this.writeStateObject(
-				'octopus.info.enwg.gridFeeStGross',
-				'ST Grid Fee Gross',
-				fees.ST.gross,
-				'value',
-				'number',
-				'€/kWh',
-			);
-			await this.writeStateObject(
-				'octopus.info.enwg.gridFeeNtNet',
-				'NT Grid Fee Net',
-				fees.NT.net,
-				'value',
-				'number',
-				'€/kWh',
-			);
-			await this.writeStateObject(
-				'octopus.info.enwg.gridFeeNtGross',
-				'NT Grid Fee Gross',
-				fees.NT.gross,
-				'value',
-				'number',
-				'€/kWh',
-			);
-			await this.writeStateObject(
-				'octopus.info.enwg.gridFeeHtNet',
-				'HT Grid Fee Net',
-				fees.HT.net,
-				'value',
-				'number',
-				'€/kWh',
-			);
-			await this.writeStateObject(
-				'octopus.info.enwg.gridFeeHtGross',
-				'HT Grid Fee Gross',
-				fees.HT.gross,
-				'value',
-				'number',
-				'€/kWh',
-			);
-		}
+			await this.setObjectNotExistsAsync('octopus.info.rates', {
+				type: 'channel',
+				common: { name: 'Octopus Rates' },
+				native: {},
+			});
+			await this.setObjectNotExistsAsync('octopus.currentMonth', {
+				type: 'channel',
+				common: { name: 'Current Month Aggregation' },
+				native: {},
+			});
+			await this.setObjectNotExistsAsync('octopus.periods', {
+				type: 'channel',
+				common: { name: 'Billing Periods' },
+				native: {},
+			});
+			await this.setObjectNotExistsAsync('octopus.periods.current', {
+				type: 'channel',
+				common: { name: 'Current Billing Period' },
+				native: {},
+			});
 
-		if (this.config.enableHistorySync && this.config.historyInstance) {
-			await this.setObjectNotExistsAsync('octopus.info.15MinConsumption', {
+			// Clean up legacy currentPeriod/lastPeriod objects
+			const legacyPeriodStates = [
+				'octopus.currentPeriod.startDate',
+				'octopus.currentPeriod.endDate',
+				'octopus.currentPeriod.totalConsumption',
+				'octopus.currentPeriod.totalCost',
+				'octopus.currentPeriod',
+				'octopus.lastPeriod.startDate',
+				'octopus.lastPeriod.endDate',
+				'octopus.lastPeriod.totalConsumption',
+				'octopus.lastPeriod.totalCost',
+				'octopus.lastPeriod',
+			];
+			for (const stateId of legacyPeriodStates) {
+				await this.delObjectAsync(stateId);
+			}
+
+			await this.setObjectNotExistsAsync('octopus.historyJson', {
 				type: 'state',
 				common: {
-					name: 'Octopus 15-Min Consumption',
-					type: 'number',
-					role: 'value',
-					unit: 'kWh',
+					name: 'Octopus Consumption History (JSON Array)',
+					type: 'string',
+					role: 'json',
 					read: true,
 					write: false,
 				},
 				native: {},
 			});
-			await this.setObjectNotExistsAsync('inexogy.info.15MinConsumption', {
+
+			await this.setObjectNotExistsAsync('octopus.info.enwgConfigHash', {
 				type: 'state',
 				common: {
-					name: 'Inexogy 15-Min Consumption',
-					type: 'number',
-					role: 'value',
-					unit: 'kWh',
+					name: 'EnWG Config Hash',
+					type: 'string',
+					role: 'text',
 					read: true,
 					write: false,
 				},
 				native: {},
 			});
-			// Optionally send enableHistory command just to be safe if the custom attribute is not caught initially
-			try {
-				await this.sendToAsync(this.config.historyInstance, 'enableHistory', {
-					id: `${this.namespace}.octopus.info.15MinConsumption`,
-					options: { changesOnly: false, debounce: 0, retention: 0, changesRelayout: false },
+
+			if (this.enwgEnabled) {
+				await this.setObjectNotExistsAsync('octopus.info.enwg', {
+					type: 'channel',
+					common: { name: '§14a EnWG Info' },
+					native: {},
 				});
-				await this.sendToAsync(this.config.historyInstance, 'enableHistory', {
-					id: `${this.namespace}.inexogy.info.15MinConsumption`,
-					options: { changesOnly: false, debounce: 0, retention: 0, changesRelayout: false },
-				});
-			} catch (e) {
-				this.log.debug(`Could not auto-enable history via sendTo: ${e.message}`);
+				const fees = this.getEnwgGridFees(this.config);
+				await this.writeStateObject(
+					'octopus.info.enwg.gridFeeStNet',
+					'ST Grid Fee Net',
+					fees.ST.net,
+					'value',
+					'number',
+					'€/kWh',
+				);
+				await this.writeStateObject(
+					'octopus.info.enwg.gridFeeStGross',
+					'ST Grid Fee Gross',
+					fees.ST.gross,
+					'value',
+					'number',
+					'€/kWh',
+				);
+				await this.writeStateObject(
+					'octopus.info.enwg.gridFeeNtNet',
+					'NT Grid Fee Net',
+					fees.NT.net,
+					'value',
+					'number',
+					'€/kWh',
+				);
+				await this.writeStateObject(
+					'octopus.info.enwg.gridFeeNtGross',
+					'NT Grid Fee Gross',
+					fees.NT.gross,
+					'value',
+					'number',
+					'€/kWh',
+				);
+				await this.writeStateObject(
+					'octopus.info.enwg.gridFeeHtNet',
+					'HT Grid Fee Net',
+					fees.HT.net,
+					'value',
+					'number',
+					'€/kWh',
+				);
+				await this.writeStateObject(
+					'octopus.info.enwg.gridFeeHtGross',
+					'HT Grid Fee Gross',
+					fees.HT.gross,
+					'value',
+					'number',
+					'€/kWh',
+				);
 			}
 		}
 
-		if (!this.enwgEnabled) {
+		if (this.config.enableHistorySync && this.config.historyInstance) {
+			for (const source of ['octopus', 'inexogy']) {
+				if (!(source === 'octopus' ? this.hasOctopus : this.hasInexogy)) {
+					continue;
+				}
+				await this.setObjectNotExistsAsync(`${source}.info.15MinConsumption`, {
+					type: 'state',
+					common: {
+						name: `${source} 15-Min Consumption`,
+						type: 'number',
+						role: 'value',
+						unit: 'kWh',
+						read: true,
+						write: false,
+					},
+					native: {},
+				});
+				try {
+					await this.sendToAsync(this.config.historyInstance, 'enableHistory', {
+						id: `${this.namespace}.${source}.info.15MinConsumption`,
+						options: { changesOnly: false, debounce: 0, retention: 0, changesRelayout: false },
+					});
+				} catch (e) {
+					this.log.debug(`Could not auto-enable history via sendTo: ${e.message}`);
+				}
+			}
+		}
+
+		if (this.hasOctopus && !this.enwgEnabled) {
 			await this.delObjectAsync('octopus.info.enwg.gridFeeStNet');
 			await this.delObjectAsync('octopus.info.enwg.gridFeeStGross');
 			await this.delObjectAsync('octopus.info.enwg.gridFeeNtNet');
@@ -305,7 +306,7 @@ class EnergyCompare extends utils.Adapter {
 			await this.delObjectAsync('octopus.info.enwg');
 		}
 
-		if (this.config.inexogyEmail) {
+		if (this.hasInexogy) {
 			await this.setObjectNotExistsAsync('inexogy', {
 				type: 'device',
 				common: { name: 'Inexogy Smart Meter' },
@@ -1136,11 +1137,9 @@ class EnergyCompare extends utils.Adapter {
 
 	async fetchInexogy(start, end) {
 		try {
-			if (!this.masterData) {
-				return null;
-			}
 			const enwgActive = this.isEnwgActiveForDate(start, this.config);
-			const isSplit = (this.masterData.isTimeOfUse && this.masterData.rates.length > 1) || enwgActive;
+			const rates = this.masterData?.rates || [];
+			const isSplit = (this.masterData?.isTimeOfUse && rates.length > 1) || enwgActive;
 			const basicAuth = Buffer.from(`${this.config.inexogyEmail}:${this.config.inexogyPassword}`).toString(
 				'base64',
 			);
@@ -1209,7 +1208,7 @@ class EnergyCompare extends utils.Adapter {
 			}
 
 			// Inexogy requires fallback to total if no split is needed, but we keep the structure
-			for (const r of this.masterData.rates) {
+			for (const r of rates) {
 				result.slots[r.name] = { consumption: 0, cost: 0, rateEuros: r.rateEuros };
 			}
 
@@ -1222,7 +1221,9 @@ class EnergyCompare extends utils.Adapter {
 			}
 
 			if (!isSplit) {
-				result.slots[this.masterData.rates[0].name].consumption = result.total;
+				if (rates.length) {
+					result.slots[rates[0].name].consumption = result.total;
+				}
 				return result;
 			}
 
@@ -1255,7 +1256,7 @@ class EnergyCompare extends utils.Adapter {
 				}
 
 				// Distribute into standard slots
-				for (const rate of this.masterData.rates) {
+				for (const rate of rates) {
 					const fromH = this.timeStrToHours(rate.from);
 					const toH = this.timeStrToHours(rate.to) || 24;
 
@@ -1639,9 +1640,6 @@ class EnergyCompare extends utils.Adapter {
 	}
 
 	async loadCachedDayData(basePathDay, source, enwgActive) {
-		if (!this.masterData) {
-			return null;
-		}
 		const totalState = await this.getStateAsync(`${basePathDay}.${source}.dailyConsumption`);
 		if (!totalState || totalState.val === null) {
 			return null;
@@ -1659,7 +1657,7 @@ class EnergyCompare extends utils.Adapter {
 			result.totalCost = Number((await this.getStateAsync(`${basePathDay}.octopus.totalCost`))?.val) || 0;
 		}
 
-		for (const rate of this.masterData.rates) {
+		for (const rate of this.masterData?.rates || []) {
 			const safeName = this.sanitizeIdSegment(rate.name).toLowerCase();
 			result.slots[rate.name] = {
 				consumption:
@@ -1684,6 +1682,43 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		return result;
+	}
+
+	/**
+	 * Check whether daily consumption data for a specific day is already cached.
+	 * Days with 0 or missing consumption are considered not cached to allow retroactive updates
+	 * when smart meter data is delivered with a delay by the API provider.
+	 *
+	 * @param {ioBroker.State | null | undefined} checkOctopus Octopus state object
+	 * @param {ioBroker.State | null | undefined} checkInexogy Inexogy state object
+	 * @param {boolean} [hasInexogy] Whether Inexogy is configured
+	 * @param {boolean} [enwgConfigChanged] Whether EnWG settings changed
+	 * @param {boolean} [enwgActive] Whether EnWG is active for the target date
+	 * @returns {boolean} True if the day has cached data and does not need to be refetched
+	 */
+	isDayCached(checkOctopus, checkInexogy, hasInexogy = false, enwgConfigChanged = false, enwgActive = false) {
+		const hasOctopus = !!(
+			checkOctopus &&
+			checkOctopus.val !== null &&
+			checkOctopus.val !== undefined &&
+			Number(checkOctopus.val) > 0
+		);
+
+		let hasInexogyData = true;
+		if (hasInexogy) {
+			hasInexogyData = !!(
+				checkInexogy &&
+				checkInexogy.val !== null &&
+				checkInexogy.val !== undefined &&
+				Number(checkInexogy.val) > 0
+			);
+		}
+
+		let isCached = hasOctopus && hasInexogyData;
+		if (enwgConfigChanged && enwgActive) {
+			isCached = false;
+		}
+		return isCached;
 	}
 
 	async syncData() {
@@ -1731,13 +1766,11 @@ class EnergyCompare extends utils.Adapter {
 
 		this.log.debug(`Starting ${syncDays}-day retroactive data sync...`);
 
-		const masterData = await this.fetchOctopusMasterData();
-		if (!masterData) {
-			this.log.warn('Aborting sync because master data could not be fetched.');
-			return;
+		this.masterData = null;
+		if (this.hasOctopus) {
+			await this.fetchOctopusMasterData();
+			await this.fetchOctopusDevices();
 		}
-
-		await this.fetchOctopusDevices();
 
 		if (this.hasInexogy) {
 			await this.fetchInexogyMasterData();
@@ -1752,7 +1785,8 @@ class EnergyCompare extends utils.Adapter {
 				const targetDate = new Date();
 				targetDate.setDate(targetDate.getDate() - i);
 				targetDate.setHours(0, 0, 0, 0);
-				const endDate = new Date(targetDate.getTime() + 24 * 60 * 60 * 1000);
+				const endDate = new Date(targetDate);
+				endDate.setDate(endDate.getDate() + 1);
 
 				const yearStr = `${targetDate.getFullYear()}`;
 				const monthStr = String(targetDate.getMonth() + 1).padStart(2, '0');
@@ -1763,12 +1797,12 @@ class EnergyCompare extends utils.Adapter {
 				const basePathDay = `${basePathMonth}.${dayStr}`;
 
 				const checkOctopus = await this.getStateAsync(`${basePathDay}.octopus.dailyConsumption`);
-				const hasOctopus = !!(checkOctopus && checkOctopus.val !== null);
+				const hasOctopus = !this.hasOctopus || this.isDayCached(checkOctopus, null);
 
 				let hasInexogyData = true;
 				if (this.hasInexogy) {
 					const checkInexogy = await this.getStateAsync(`${basePathDay}.inexogy.dailyConsumption`);
-					hasInexogyData = !!(checkInexogy && checkInexogy.val !== null);
+					hasInexogyData = this.isDayCached(checkInexogy, null);
 				}
 
 				const enwgActive = this.isEnwgActiveForDate(targetDate, this.config);
@@ -1804,31 +1838,36 @@ class EnergyCompare extends utils.Adapter {
 						common: { name: `Day ${yearStr}-${monthStr}-${dayStr}` },
 						native: {},
 					});
-					await this.setObjectNotExistsAsync(`${basePathDay}.octopus`, {
-						type: 'channel',
-						common: { name: 'Octopus Energy Data' },
-						native: {},
-					});
+					if (this.hasOctopus) {
+						await this.setObjectNotExistsAsync(`${basePathDay}.octopus`, {
+							type: 'channel',
+							common: { name: 'Octopus Energy Data' },
+							native: {},
+						});
+					}
 					if (this.hasInexogy) {
 						await this.setObjectNotExistsAsync(`${basePathDay}.inexogy`, {
 							type: 'channel',
 							common: { name: 'Inexogy Smart Meter Data' },
 							native: {},
 						});
-						await this.setObjectNotExistsAsync(`${basePathDay}.comparison`, {
-							type: 'channel',
-							common: { name: 'Comparison Data' },
-							native: {},
-						});
+						if (this.hasOctopus) {
+							await this.setObjectNotExistsAsync(`${basePathDay}.comparison`, {
+								type: 'channel',
+								common: { name: 'Comparison Data' },
+								native: {},
+							});
+						}
 					}
 
 					const forceRecalculation = this.enwgConfigChanged && enwgActive;
-					const octopusData =
-						!hasOctopus || forceRecalculation
+					const octopusData = !this.hasOctopus
+						? null
+						: !hasOctopus || forceRecalculation
 							? await this.fetchOctopus(targetDate, endDate)
 							: await this.loadCachedDayData(basePathDay, 'octopus', enwgActive);
 					let inexogyData = null;
-					if (this.hasInexogy) {
+					if (this.hasInexogy && !syncDecision.retryDeferred) {
 						inexogyData =
 							!hasInexogyData || forceRecalculation
 								? await this.fetchInexogy(targetDate, endDate)
@@ -1932,26 +1971,28 @@ class EnergyCompare extends utils.Adapter {
 								});
 							}
 						}
+					}
 
-						if (inexogyData) {
-							if (Object.hasOwn(inexogyRetries, dateKey)) {
-								delete inexogyRetries[dateKey];
-								inexogyRetriesChanged = true;
-							}
+					if (inexogyData) {
+						if (Object.hasOwn(inexogyRetries, dateKey)) {
+							delete inexogyRetries[dateKey];
+							inexogyRetriesChanged = true;
+						}
+						await this.writeStateObject(
+							`${basePathDay}.inexogy.dailyConsumption`,
+							'Daily Consumption',
+							parseFloat(inexogyData.total.toFixed(3)),
+						);
+
+						for (const [slotName, slotData] of Object.entries(inexogyData.slots)) {
+							const safeName = this.sanitizeIdSegment(slotName).toLowerCase();
 							await this.writeStateObject(
-								`${basePathDay}.inexogy.dailyConsumption`,
-								'Daily Consumption',
-								parseFloat(inexogyData.total.toFixed(3)),
+								`${basePathDay}.inexogy.${safeName}Consumption`,
+								`Consumption ${slotName}`,
+								parseFloat(slotData.consumption.toFixed(3)),
 							);
 
-							for (const [slotName, slotData] of Object.entries(inexogyData.slots)) {
-								const safeName = this.sanitizeIdSegment(slotName).toLowerCase();
-								await this.writeStateObject(
-									`${basePathDay}.inexogy.${safeName}Consumption`,
-									`Consumption ${slotName}`,
-									parseFloat(slotData.consumption.toFixed(3)),
-								);
-
+							if (octopusData?.slots[slotName]) {
 								const diff = Math.abs(octopusData.slots[slotName].consumption - slotData.consumption);
 								await this.writeStateObject(
 									`${basePathDay}.comparison.${safeName}Difference`,
@@ -1959,17 +2000,19 @@ class EnergyCompare extends utils.Adapter {
 									parseFloat(diff.toFixed(3)),
 								);
 							}
+						}
 
-							if (inexogyData.enwgSlots) {
-								for (const [slotName, slotData] of Object.entries(inexogyData.enwgSlots)) {
-									const safeName = this.sanitizeIdSegment(slotName).toLowerCase();
-									await this.writeStateObject(
-										`${basePathDay}.inexogy.${safeName}Consumption`,
-										`Consumption EnWG ${slotName}`,
-										parseFloat(slotData.consumption.toFixed(3)),
-									);
+						if (inexogyData.enwgSlots) {
+							for (const [slotName, slotData] of Object.entries(inexogyData.enwgSlots)) {
+								const safeName = this.sanitizeIdSegment(slotName).toLowerCase();
+								await this.writeStateObject(
+									`${basePathDay}.inexogy.${safeName}Consumption`,
+									`Consumption EnWG ${slotName}`,
+									parseFloat(slotData.consumption.toFixed(3)),
+								);
 
-									const octCons = octopusData.enwgSlots[slotName]?.consumption || 0;
+								if (octopusData?.enwgSlots?.[slotName]) {
+									const octCons = octopusData.enwgSlots[slotName].consumption;
 									const diff = Math.abs(octCons - slotData.consumption);
 									await this.writeStateObject(
 										`${basePathDay}.comparison.${safeName}Difference`,
@@ -1977,22 +2020,19 @@ class EnergyCompare extends utils.Adapter {
 										parseFloat(diff.toFixed(3)),
 									);
 								}
-							} else if (this.enwgEnabled) {
-								for (const slotName of ['NT', 'ST', 'HT']) {
-									const safeName = this.sanitizeIdSegment(slotName).toLowerCase();
-									await this.writeStateObject(
-										`${basePathDay}.inexogy.${safeName}Consumption`,
-										`Consumption EnWG ${slotName}`,
-										0,
-									);
-									await this.writeStateObject(
-										`${basePathDay}.comparison.${safeName}Difference`,
-										`Difference EnWG ${slotName}`,
-										0,
-									);
-								}
 							}
+						} else if (this.enwgEnabled) {
+							for (const slotName of ['NT', 'ST', 'HT']) {
+								const safeName = this.sanitizeIdSegment(slotName).toLowerCase();
+								await this.writeStateObject(
+									`${basePathDay}.inexogy.${safeName}Consumption`,
+									`Consumption EnWG ${slotName}`,
+									0,
+								);
+							}
+						}
 
+						if (octopusData) {
 							const totalDiff = Math.abs(octopusData.total - inexogyData.total);
 							const threshold = Number(this.config.discrepancyThreshold) || 0.1;
 							await this.writeStateObject(
@@ -2013,29 +2053,26 @@ class EnergyCompare extends utils.Adapter {
 									`Discrepancy for ${yearStr}-${monthStr}-${dayStr}! Diff: ${totalDiff.toFixed(3)} kWh`,
 								);
 							}
-
-							if (
-								syncDecision.exportInexogy &&
-								this.config.enableHistorySync &&
-								this.config.historyInstance &&
-								inexogyData.rawIntervals
-							) {
-								for (const p of inexogyData.rawIntervals) {
-									historyPayloads.push({
-										id: `${this.namespace}.inexogy.info.15MinConsumption`,
-										state: { ts: p.ts, val: p.val, ack: true, q: 0 },
-									});
-								}
-							}
-						} else if (this.hasInexogy && !hasInexogyData) {
-							inexogyRetries[dateKey] = Date.now() + INEXOGY_HISTORY_RETRY_MS;
-							inexogyRetriesChanged = true;
-							this.log.warn(
-								`No Inexogy history available for ${dateKey}; next retry will be attempted in 6 hours.`,
-							);
 						}
-					} else {
-						this.log.warn(`Skipping ${yearStr}-${monthStr}-${dayStr} due to missing Octopus data.`);
+						if (
+							syncDecision.exportInexogy &&
+							this.config.enableHistorySync &&
+							this.config.historyInstance &&
+							inexogyData.rawIntervals
+						) {
+							for (const p of inexogyData.rawIntervals) {
+								historyPayloads.push({
+									id: `${this.namespace}.inexogy.info.15MinConsumption`,
+									state: { ts: p.ts, val: p.val, ack: true, q: 0 },
+								});
+							}
+						}
+					} else if (this.hasInexogy && !hasInexogyData && !syncDecision.retryDeferred) {
+						inexogyRetries[dateKey] = Date.now() + INEXOGY_HISTORY_RETRY_MS;
+						inexogyRetriesChanged = true;
+						this.log.warn(
+							`No Inexogy history available for ${dateKey}; next retry will be attempted in 6 hours.`,
+						);
 					}
 				}
 			}
@@ -2062,13 +2099,19 @@ class EnergyCompare extends utils.Adapter {
 			this.enwgConfigChanged = false;
 
 			// Aggregate hierarchical data
-			await this.aggregateHistory(adapterObjects);
+			const updatedObjects = await this.getAdapterObjectsAsync();
+			if (this.hasOctopus) {
+				await this.aggregateHistory(updatedObjects);
+			}
+			if (this.hasInexogy) {
+				await this.aggregateInexogyHistory(updatedObjects);
+			}
 
 			// Update JSONs
-			await this.updateHistoryJson(adapterObjects);
+			await this.updateHistoryJson(updatedObjects);
 
 			// 3. Update meter reading
-			const lastOfficialReading = await this.fetchOctopusMeterReadings();
+			const lastOfficialReading = this.hasOctopus ? await this.fetchOctopusMeterReadings() : null;
 			if (lastOfficialReading) {
 				let totalSinceLastReading = 0;
 				const historyPrefixForSum = `${this.namespace}.history.`;
@@ -2174,6 +2217,82 @@ class EnergyCompare extends utils.Adapter {
 				}
 			}
 		}
+	}
+
+	async aggregateInexogyHistory(objects) {
+		const totals = new Map();
+		const prefix = `${this.namespace}.history.`;
+		const now = new Date();
+		const currentMonth = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}`;
+		const currentPeriod = this.getPeriodDates(now, Number(this.config.billingPeriodStartDay) || 1);
+		let monthTotal = 0;
+		let periodTotal = 0;
+		for (const id of Object.keys(objects)) {
+			if (!id.startsWith(prefix)) {
+				continue;
+			}
+			const parts = id.slice(prefix.length).split('.');
+			if (parts.length !== 5 || parts[3] !== 'inexogy' || parts[4] !== 'dailyConsumption') {
+				continue;
+			}
+			const state = await this.getStateAsync(id);
+			if (state?.val == null || !Number.isFinite(Number(state.val))) {
+				continue;
+			}
+			const value = Number(state.val);
+			const [year, month, day] = parts;
+			for (const key of [year, `${year}.${month}`]) {
+				totals.set(key, (totals.get(key) || 0) + value);
+			}
+			if (`${year}.${month}` === currentMonth) {
+				monthTotal += value;
+			}
+			const date = new Date(Number(year), Number(month) - 1, Number(day));
+			if (date >= currentPeriod.start && date <= currentPeriod.end) {
+				periodTotal += value;
+			}
+		}
+		for (const [key, value] of totals) {
+			await this.setObjectNotExistsAsync(`history.${key}.inexogy`, {
+				type: 'channel',
+				common: { name: 'Inexogy totals' },
+				native: {},
+			});
+			await this.writeStateObject(
+				`history.${key}.inexogy.totalConsumption`,
+				'Total Consumption',
+				Number(value.toFixed(3)),
+			);
+		}
+		for (const channel of ['inexogy.currentMonth', 'inexogy.periods', 'inexogy.periods.current']) {
+			await this.setObjectNotExistsAsync(channel, { type: 'channel', common: { name: channel }, native: {} });
+		}
+		await this.writeStateObject(
+			'inexogy.currentMonth.totalConsumption',
+			'Current Month Consumption',
+			Number(monthTotal.toFixed(3)),
+		);
+		await this.writeStateObject(
+			'inexogy.periods.current.totalConsumption',
+			'Current Period Consumption',
+			Number(periodTotal.toFixed(3)),
+		);
+		const formatDate = date =>
+			`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+		await this.writeStateObject(
+			'inexogy.periods.current.startDate',
+			'Period Start Date',
+			formatDate(currentPeriod.start),
+			'text',
+			'string',
+		);
+		await this.writeStateObject(
+			'inexogy.periods.current.endDate',
+			'Period End Date',
+			formatDate(currentPeriod.end),
+			'text',
+			'string',
+		);
 	}
 
 	async aggregateHistory(adapterObjects) {
@@ -2594,7 +2713,9 @@ class EnergyCompare extends utils.Adapter {
 				}
 			}
 
-			octopusHistory.push(dayObj);
+			if (this.hasOctopus) {
+				octopusHistory.push(dayObj);
+			}
 
 			if (this.hasInexogy) {
 				const inxDayObj = {
@@ -2622,7 +2743,9 @@ class EnergyCompare extends utils.Adapter {
 			}
 		}
 
-		await this.setStateAsync('octopus.historyJson', { val: JSON.stringify(octopusHistory), ack: true });
+		if (this.hasOctopus) {
+			await this.setStateAsync('octopus.historyJson', { val: JSON.stringify(octopusHistory), ack: true });
+		}
 		if (this.hasInexogy) {
 			await this.setStateAsync('inexogy.historyJson', { val: JSON.stringify(inexogyHistory), ack: true });
 		}
