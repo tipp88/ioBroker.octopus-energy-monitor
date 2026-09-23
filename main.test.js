@@ -1,6 +1,7 @@
 'use strict';
 
 const { expect } = require('chai');
+const axios = require('axios');
 
 // Mock @iobroker/adapter-core so that requiring main.js doesn't boot the real ioBroker system
 // @ts-ignore
@@ -22,6 +23,346 @@ require.cache[require.resolve('@iobroker/adapter-core')] = {
 
 const factory = require('./main.js');
 const adapter = factory({});
+
+describe('Independent provider operation', () => {
+	function fixture(octopus, inexogy, staleObjectView = false) {
+		const a = factory({});
+		const states = {};
+		const objects = {};
+		const calls = [];
+		const errors = [];
+		a.namespace = 'octopus-energy-monitor.0';
+		a.config = {
+			octopusEmail: octopus ? 'test' : '',
+			octopusPassword: octopus ? 'test' : '',
+			inexogyEmail: inexogy ? 'test' : '',
+			inexogyPassword: inexogy ? 'test' : '',
+			syncDays: 1,
+			enableHistorySync: true,
+			historyInstance: 'influxdb.0',
+		};
+		a.hasOctopus = octopus;
+		a.hasInexogy = inexogy;
+		a.log.error = message => errors.push(message);
+		const local = id => id.replace(a.namespace + '.', '');
+		a.getStateAsync = async id => states[local(id)] || null;
+		a.setStateAsync = async (id, state) => {
+			states[local(id)] = state;
+		};
+		a.setObjectNotExistsAsync = async (id, obj) => {
+			objects[a.namespace + '.' + id] = obj;
+		};
+		a.getAdapterObjectsAsync = async () => (staleObjectView ? {} : { ...objects });
+		a.delObjectAsync = async () => {};
+		a.subscribeStates = () => {};
+		a.setTimeout = () => 1;
+		a.sendToAsync = async (target, command, payload) => {
+			calls.push({ command, payload });
+			return { success: true };
+		};
+		a.fetchOctopusMasterData = async () => {
+			calls.push({ command: 'octopusMaster' });
+			a.masterData = { rates: [{ name: 'Standard', rateEuros: 0.3 }], isTimeOfUse: false };
+			return a.masterData;
+		};
+		a.fetchOctopusDevices = async () => {};
+		a.fetchOctopusMeterReadings = async () => null;
+		a.fetchInexogyMasterData = async () => {
+			a.inexogyMeterId = 'test-meter';
+		};
+		a.fetchOctopus = async () => {
+			calls.push({ command: 'octopusDay' });
+			if (!a.masterData) return null;
+			return {
+				total: 2,
+				totalCost: 0.6,
+				slots: { Standard: { consumption: 2, cost: 0.6 } },
+				rawIntervals: [{ ts: 1, val: 2 }],
+			};
+		};
+		a.fetchInexogyReadings = async (_, __, start) => {
+			calls.push({ command: 'inexogyDay' });
+			return [
+				{ time: start.getTime(), values: { energy: 10000000000 } },
+				{ time: start.getTime() + 900000, values: { energy: 30000000000 } },
+			];
+		};
+		return { a, states, objects, calls, errors };
+	}
+
+	for (const [octopus, inexogy] of [
+		[true, false],
+		[false, true],
+		[true, true],
+	]) {
+		it(`starts and synchronizes with Octopus=${octopus}, Inexogy=${inexogy}`, async () => {
+			const { a, states, calls, objects, errors } = fixture(octopus, inexogy);
+			await a.onReady();
+			expect(a.syncTimeout).to.equal(1);
+			await a.syncData();
+			expect(errors).to.deep.equal([]);
+			const payload = calls.find(call => call.command === 'storeState').payload;
+			expect(payload.some(point => point.id.includes('.octopus.'))).to.equal(octopus);
+			expect(payload.some(point => point.id.includes('.inexogy.'))).to.equal(inexogy);
+			expect(Object.keys(states).some(id => id.includes('.comparison.'))).to.equal(octopus && inexogy);
+			if (!octopus) {
+				expect(calls.some(call => call.command.startsWith('octopus'))).to.equal(false);
+				expect(Object.keys(objects).some(id => id.includes('.octopus.'))).to.equal(false);
+				expect(states['inexogy.currentMonth.totalConsumption'].val).to.be.a('number');
+				expect(JSON.parse(states['inexogy.historyJson'].val)[0].total).to.equal(2);
+			}
+			const exportsBefore = calls.filter(call => call.command === 'storeState').length;
+			await a.syncData();
+			expect(calls.filter(call => call.command === 'storeState')).to.have.length(exportsBefore);
+		});
+	}
+
+	it('continues Inexogy when Octopus master data is unavailable', async () => {
+		const { a, states, calls, errors } = fixture(true, true);
+		a.fetchOctopusMasterData = async () => null;
+		await a.syncData();
+		expect(errors).to.deep.equal([]);
+		expect(Object.keys(states).some(id => id.endsWith('.inexogy.dailyConsumption'))).to.equal(true);
+		expect(Object.keys(states).some(id => id.includes('.comparison.'))).to.equal(false);
+		expect(
+			calls.find(call => call.command === 'storeState').payload.every(point => point.id.includes('.inexogy.')),
+		).to.equal(true);
+	});
+
+	it('continues Octopus when Inexogy returns no readings', async () => {
+		const { a, calls, states, errors } = fixture(true, true);
+		a.fetchInexogyReadings = async () => [];
+		await a.syncData();
+		expect(errors).to.deep.equal([]);
+		await a.syncData();
+		expect(calls.filter(call => call.command === 'storeState')).to.have.length(1);
+	});
+
+	it('does not schedule synchronization without any complete credentials', async () => {
+		const { a } = fixture(false, false);
+		await a.onReady();
+		expect(a.syncTimeout).to.equal(undefined);
+	});
+
+	it('aggregates the current Octopus period before newly created objects appear in the object view', async () => {
+		const RealDate = global.Date;
+		// @ts-ignore
+		global.Date = function (...args) {
+			if (args.length === 0) {
+				return new RealDate(2026, 8, 18);
+			}
+			// @ts-ignore
+			return new RealDate(...args);
+		};
+		global.Date.now = () => new RealDate(2026, 8, 18).getTime();
+		global.Date.UTC = RealDate.UTC;
+		global.Date.parse = RealDate.parse;
+
+		try {
+			const { a, states, errors } = fixture(true, false, true);
+			a.config.billingPeriodStartDay = 17;
+			await a.syncData();
+
+			expect(errors).to.deep.equal([]);
+			expect(states['octopus.periods.2026-09-17.totalConsumption'].val).to.equal(2);
+			expect(states['octopus.periods.current.totalConsumption'].val).to.equal(2);
+			expect(states['octopus.periods.current.startDate'].val).to.equal('2026-09-17');
+		} finally {
+			global.Date = RealDate;
+		}
+	});
+
+	it('aggregates cached Octopus days when the object view is incomplete after an instance start', async () => {
+		const RealDate = global.Date;
+		// @ts-ignore
+		global.Date = function (...args) {
+			if (args.length === 0) {
+				return new RealDate(2026, 8, 18);
+			}
+			// @ts-ignore
+			return new RealDate(...args);
+		};
+		global.Date.now = () => new RealDate(2026, 8, 18).getTime();
+		global.Date.UTC = RealDate.UTC;
+		global.Date.parse = RealDate.parse;
+
+		try {
+			const { a, states, calls, errors } = fixture(true, false, true);
+			a.config.billingPeriodStartDay = 17;
+			states['history.2026.09.17.octopus.dailyConsumption'] = { val: 2, ack: true };
+			states['history.2026.09.17.octopus.totalCost'] = { val: 0.6, ack: true };
+			states['history.2026.09.17.octopus.standardConsumption'] = { val: 2, ack: true };
+			states['history.2026.09.17.octopus.standardCost'] = { val: 0.6, ack: true };
+
+			await a.syncData();
+
+			expect(errors).to.deep.equal([]);
+			expect(calls.some(call => call.command === 'octopusDay')).to.equal(false);
+			expect(states['octopus.periods.2026-09-17.totalConsumption'].val).to.equal(2);
+			expect(states['octopus.periods.current.totalConsumption'].val).to.equal(2);
+		} finally {
+			global.Date = RealDate;
+		}
+	});
+
+	it('prioritizes the current Octopus period when the API limits the initial request burst', async () => {
+		const RealDate = global.Date;
+		// @ts-ignore
+		global.Date = function (...args) {
+			if (args.length === 0) {
+				return new RealDate(2026, 8, 23);
+			}
+			// @ts-ignore
+			return new RealDate(...args);
+		};
+		global.Date.now = () => new RealDate(2026, 8, 23).getTime();
+		global.Date.UTC = RealDate.UTC;
+		global.Date.parse = RealDate.parse;
+
+		try {
+			const { a, states, errors } = fixture(true, false, true);
+			a.config.billingPeriodStartDay = 17;
+			a.config.syncDays = 30;
+			let octopusRequests = 0;
+			const requestedDates = [];
+			a.fetchOctopus = async start => {
+				octopusRequests++;
+				requestedDates.push(
+					`${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`,
+				);
+				if (octopusRequests > 15) {
+					return null;
+				}
+				return {
+					total: 2,
+					totalCost: 0.6,
+					slots: { Standard: { consumption: 2, cost: 0.6 } },
+					rawIntervals: [],
+				};
+			};
+
+			await a.syncData();
+
+			expect(errors).to.deep.equal([]);
+			expect(requestedDates[0]).to.equal('2026-09-22');
+			expect(states['octopus.periods.2026-09-17.totalConsumption'].val).to.equal(12);
+			expect(states['octopus.periods.current.totalConsumption'].val).to.equal(12);
+		} finally {
+			global.Date = RealDate;
+		}
+	});
+
+	it('aggregates EnWG NT, ST and HT values into dated and current billing periods', async () => {
+		const RealDate = global.Date;
+		// @ts-ignore
+		global.Date = function (...args) {
+			if (args.length === 0) {
+				return new RealDate(2026, 8, 23);
+			}
+			// @ts-ignore
+			return new RealDate(...args);
+		};
+		global.Date.now = () => new RealDate(2026, 8, 23).getTime();
+		global.Date.UTC = RealDate.UTC;
+		global.Date.parse = RealDate.parse;
+
+		try {
+			const { a, states, errors } = fixture(true, false, true);
+			a.config.billingPeriodStartDay = 17;
+			a.config.syncDays = 6;
+			a.config.enwgStartDate = '2026-09-01';
+			a.enwgEnabled = true;
+			a.fetchOctopus = async () => ({
+				total: 2,
+				totalCost: 0.6,
+				slots: { Standard: { consumption: 2, cost: 0.6 } },
+				enwgSlots: {
+					NT: { consumption: 0.5, costGross: 0.1, costNet: 0.08 },
+					ST: { consumption: 1, costGross: 0.3, costNet: 0.25 },
+					HT: { consumption: 0.5, costGross: 0.2, costNet: 0.17 },
+				},
+				rawIntervals: [],
+			});
+
+			await a.syncData();
+
+			expect(errors).to.deep.equal([]);
+			for (const periodPath of ['octopus.periods.2026-09-17', 'octopus.periods.current']) {
+				expect(states[`${periodPath}.ntConsumption`].val).to.equal(3);
+				expect(states[`${periodPath}.ntCost`].val).to.equal(0.6);
+				expect(states[`${periodPath}.ntCostNet`].val).to.equal(0.48);
+				expect(states[`${periodPath}.stConsumption`].val).to.equal(6);
+				expect(states[`${periodPath}.stCost`].val).to.equal(1.8);
+				expect(states[`${periodPath}.stCostNet`].val).to.equal(1.5);
+				expect(states[`${periodPath}.htConsumption`].val).to.equal(3);
+				expect(states[`${periodPath}.htCost`].val).to.equal(1.2);
+				expect(states[`${periodPath}.htCostNet`].val).to.equal(1.02);
+			}
+		} finally {
+			global.Date = RealDate;
+		}
+	});
+
+	it('logs Octopus GraphQL errors with their code, description and requested date', async () => {
+		const a = factory({});
+		const errors = [];
+		a.config = {
+			octopusAccount: 'A-TEST',
+			enableHistorySync: false,
+		};
+		a.masterData = {
+			propertyId: 'property-test',
+			isTimeOfUse: false,
+			rates: [{ name: 'Standard', rateEuros: 0.3 }],
+		};
+		a.octopusAuthToken = 'test-token';
+		a.log.error = message => errors.push(message);
+		const originalPost = axios.post;
+		axios.post = async () => ({
+			status: 200,
+			headers: { 'retry-after': '30', 'x-ratelimit-remaining': '0' },
+			data: {
+				errors: [
+					{
+						message: 'Request was rate limited.',
+						extensions: {
+							errorCode: 'KT-CT-1199',
+							errorDescription: 'Too many requests.',
+						},
+					},
+				],
+			},
+		});
+
+		try {
+			const result = await a.fetchOctopus(new Date(2026, 8, 22), new Date(2026, 8, 23));
+			expect(result).to.equal(null);
+			expect(a.octopusRateLimited).to.equal(true);
+			expect(errors).to.deep.equal([
+				'Octopus usage API GraphQL error for 2026-09-22: KT-CT-1199: Too many requests. Further Octopus requests are skipped until the next synchronization (retry-after=30, rate-remaining=0).',
+			]);
+		} finally {
+			axios.post = originalPost;
+		}
+	});
+
+	it('stops further Octopus requests after a rate limit while continuing the sync', async () => {
+		const { a, calls, errors } = fixture(true, true, true);
+		a.config.syncDays = 5;
+		let octopusRequests = 0;
+		a.fetchOctopus = async () => {
+			octopusRequests++;
+			a.octopusRateLimited = true;
+			return null;
+		};
+
+		await a.syncData();
+
+		expect(errors).to.deep.equal([]);
+		expect(octopusRequests).to.equal(1);
+		expect(calls.filter(call => call.command === 'inexogyDay')).to.have.length(5);
+	});
+});
 
 describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 	describe('validateEnwgConfig', () => {
@@ -430,4 +771,3 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 		});
 	});
 });
-
