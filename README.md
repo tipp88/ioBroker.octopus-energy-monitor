@@ -68,6 +68,11 @@ To install this adapter in your ioBroker environment:
 Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
 ## Changelog
+### **WORK IN PROGRESS**
+* (tipp88) Added standalone Inexogy and Octopus operation with independent data retrieval and history export.
+* (tipp88) Restricted comparisons to days with data from both providers.
+* (tipp88) Added Inexogy monthly, yearly and current billing-period consumption totals.
+
 ### 1.0.1 (2026-09-14)
 * (tipp88) Fixed consumption data for previous days not updating automatically when initially retrieved with 0 kWh (Issue #31).
 * (tipp88) Upgraded axios dependency to 1.20.0.
