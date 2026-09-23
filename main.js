@@ -2327,6 +2327,7 @@ class EnergyCompare extends utils.Adapter {
 							consumption: 0,
 							cost: 0,
 							slots: {},
+							enwgSlots: {},
 						};
 					}
 
@@ -2351,6 +2352,22 @@ class EnergyCompare extends utils.Adapter {
 							}
 							periodMap[periodKey].slots[slotName].consumption += slotCons;
 							periodMap[periodKey].slots[slotName].cost += slotCost;
+						}
+					}
+
+					if (this.isEnwgActiveForDate(stateDate, this.config)) {
+						for (const slotName of ['nt', 'st', 'ht']) {
+							const slotBaseId = `${historyPrefix}${year}.${month}.${day}.octopus.${slotName}`;
+							const slotConsState = await this.getStateAsync(`${slotBaseId}Consumption`);
+							const slotCostState = await this.getStateAsync(`${slotBaseId}Cost`);
+							const slotCostNetState = await this.getStateAsync(`${slotBaseId}CostNet`);
+
+							if (!periodMap[periodKey].enwgSlots[slotName]) {
+								periodMap[periodKey].enwgSlots[slotName] = { consumption: 0, cost: 0, costNet: 0 };
+							}
+							periodMap[periodKey].enwgSlots[slotName].consumption += Number(slotConsState?.val) || 0;
+							periodMap[periodKey].enwgSlots[slotName].cost += Number(slotCostState?.val) || 0;
+							periodMap[periodKey].enwgSlots[slotName].costNet += Number(slotCostNetState?.val) || 0;
 						}
 					}
 				}
@@ -2541,6 +2558,39 @@ class EnergyCompare extends utils.Adapter {
 				);
 			}
 
+			for (const [slotName, slotData] of Object.entries(pData.enwgSlots)) {
+				const capSlot = slotName.toUpperCase();
+				const consPath = `${basePath}.${slotName}Consumption`;
+				const costPath = `${basePath}.${slotName}Cost`;
+				const costNetPath = `${basePath}.${slotName}CostNet`;
+
+				activePeriodIds.add(`${this.namespace}.${consPath}`);
+				activePeriodIds.add(`${this.namespace}.${costPath}`);
+				activePeriodIds.add(`${this.namespace}.${costNetPath}`);
+
+				await this.writeStateObject(
+					consPath,
+					`EnWG ${capSlot} Consumption`,
+					parseFloat(slotData.consumption.toFixed(3)),
+				);
+				await this.writeStateObject(
+					costPath,
+					`EnWG ${capSlot} Cost Gross`,
+					parseFloat(slotData.cost.toFixed(2)),
+					'value',
+					'number',
+					'€',
+				);
+				await this.writeStateObject(
+					costNetPath,
+					`EnWG ${capSlot} Cost Net`,
+					parseFloat(slotData.costNet.toFixed(2)),
+					'value',
+					'number',
+					'€',
+				);
+			}
+
 			// If this is the current active period containing today's date
 			if (today >= pData.start && today <= pData.end) {
 				await this.writeStateObject(
@@ -2596,6 +2646,39 @@ class EnergyCompare extends utils.Adapter {
 						curCostPath,
 						`Current Period ${capSlot} Cost`,
 						parseFloat(slotData.cost.toFixed(2)),
+						'value',
+						'number',
+						'€',
+					);
+				}
+
+				for (const [slotName, slotData] of Object.entries(pData.enwgSlots)) {
+					const capSlot = slotName.toUpperCase();
+					const curConsPath = `octopus.periods.current.${slotName}Consumption`;
+					const curCostPath = `octopus.periods.current.${slotName}Cost`;
+					const curCostNetPath = `octopus.periods.current.${slotName}CostNet`;
+
+					activePeriodIds.add(`${this.namespace}.${curConsPath}`);
+					activePeriodIds.add(`${this.namespace}.${curCostPath}`);
+					activePeriodIds.add(`${this.namespace}.${curCostNetPath}`);
+
+					await this.writeStateObject(
+						curConsPath,
+						`Current Period EnWG ${capSlot} Consumption`,
+						parseFloat(slotData.consumption.toFixed(3)),
+					);
+					await this.writeStateObject(
+						curCostPath,
+						`Current Period EnWG ${capSlot} Cost Gross`,
+						parseFloat(slotData.cost.toFixed(2)),
+						'value',
+						'number',
+						'€',
+					);
+					await this.writeStateObject(
+						curCostNetPath,
+						`Current Period EnWG ${capSlot} Cost Net`,
+						parseFloat(slotData.costNet.toFixed(2)),
 						'value',
 						'number',
 						'€',

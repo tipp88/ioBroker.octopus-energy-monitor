@@ -252,6 +252,57 @@ describe('Independent provider operation', () => {
 		}
 	});
 
+	it('aggregates EnWG NT, ST and HT values into dated and current billing periods', async () => {
+		const RealDate = global.Date;
+		// @ts-ignore
+		global.Date = function (...args) {
+			if (args.length === 0) {
+				return new RealDate(2026, 8, 23);
+			}
+			// @ts-ignore
+			return new RealDate(...args);
+		};
+		global.Date.now = () => new RealDate(2026, 8, 23).getTime();
+		global.Date.UTC = RealDate.UTC;
+		global.Date.parse = RealDate.parse;
+
+		try {
+			const { a, states, errors } = fixture(true, false, true);
+			a.config.billingPeriodStartDay = 17;
+			a.config.syncDays = 6;
+			a.config.enwgStartDate = '2026-09-01';
+			a.enwgEnabled = true;
+			a.fetchOctopus = async () => ({
+				total: 2,
+				totalCost: 0.6,
+				slots: { Standard: { consumption: 2, cost: 0.6 } },
+				enwgSlots: {
+					NT: { consumption: 0.5, costGross: 0.1, costNet: 0.08 },
+					ST: { consumption: 1, costGross: 0.3, costNet: 0.25 },
+					HT: { consumption: 0.5, costGross: 0.2, costNet: 0.17 },
+				},
+				rawIntervals: [],
+			});
+
+			await a.syncData();
+
+			expect(errors).to.deep.equal([]);
+			for (const periodPath of ['octopus.periods.2026-09-17', 'octopus.periods.current']) {
+				expect(states[`${periodPath}.ntConsumption`].val).to.equal(3);
+				expect(states[`${periodPath}.ntCost`].val).to.equal(0.6);
+				expect(states[`${periodPath}.ntCostNet`].val).to.equal(0.48);
+				expect(states[`${periodPath}.stConsumption`].val).to.equal(6);
+				expect(states[`${periodPath}.stCost`].val).to.equal(1.8);
+				expect(states[`${periodPath}.stCostNet`].val).to.equal(1.5);
+				expect(states[`${periodPath}.htConsumption`].val).to.equal(3);
+				expect(states[`${periodPath}.htCost`].val).to.equal(1.2);
+				expect(states[`${periodPath}.htCostNet`].val).to.equal(1.02);
+			}
+		} finally {
+			global.Date = RealDate;
+		}
+	});
+
 	it('logs Octopus GraphQL errors with their code, description and requested date', async () => {
 		const a = factory({});
 		const errors = [];

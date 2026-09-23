@@ -75,6 +75,7 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 * (tipp88) Fixed current billing-period aggregation on the first synchronization by prioritizing recent history.
 * (tipp88) Added diagnostics for Octopus usage API HTTP and GraphQL errors.
 * (tipp88) Stopped repeated Octopus requests within a synchronization after an API rate-limit response.
+* (tipp88) Added EnWG NT, ST and HT consumption and cost totals to Octopus billing periods.
 
 ### 1.0.1 (2026-09-14)
 * (tipp88) Fixed consumption data for previous days not updating automatically when initially retrieved with 0 kWh (Issue #31).
