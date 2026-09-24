@@ -68,7 +68,7 @@ To install this adapter in your ioBroker environment:
 Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
 ## Changelog
-### **WORK IN PROGRESS**
+### 1.1.0 (2026-09-24)
 * (tipp88) Added standalone Inexogy and Octopus operation with independent data retrieval and history export.
 * (tipp88) Restricted comparisons to days with data from both providers.
 * (tipp88) Added Inexogy monthly, yearly and current billing-period consumption totals.
@@ -96,13 +96,6 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 * (tipp88) Fixed `rate.name` from external API being used unsanitized in ioBroker object IDs.
 * (tipp88) Fixed `setSmartChargeStatus()` sending the sanitized device ID to Octopus API instead of original ID.
 * (tipp88) Optimized database interval sync by consolidating all object scans into a single pre-fetch.
-
-### 0.6.7 (2026-07-01)
-* (tipp88) Fixed missing UI translations for the `updateInterval` minimum warning.
-* (tipp88) Fixed missing external object ID sanitization (ioBroker repo compliance).
-* (tipp88) Enforced a 15-minute minimum for `updateInterval` to prevent excessive cloud polling.
-* (tipp88) Refactored `fetchInexogy` and optimized object scanning overhead during history aggregation.
-* (tipp88) Capped `syncDays` retroactive data fetching to `retentionDays` to avoid fetching data that would immediately be deleted.
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
 

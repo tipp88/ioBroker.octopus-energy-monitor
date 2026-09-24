@@ -1,4 +1,11 @@
 # Older changes
+## 0.6.7 (2026-07-01)
+* (tipp88) Fixed missing UI translations for the `updateInterval` minimum warning.
+* (tipp88) Fixed missing external object ID sanitization (ioBroker repo compliance).
+* (tipp88) Enforced a 15-minute minimum for `updateInterval` to prevent excessive cloud polling.
+* (tipp88) Refactored `fetchInexogy` and optimized object scanning overhead during history aggregation.
+* (tipp88) Capped `syncDays` retroactive data fetching to `retentionDays` to avoid fetching data that would immediately be deleted.
+
 ## 0.6.6 (2026-06-29)
 * (ioBroker-Bot) Adapter requires admin >= 7.8.23 now.
 
