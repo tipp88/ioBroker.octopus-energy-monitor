@@ -177,6 +177,7 @@
     "updateInterval": 60,
     "splitGoTariff": false,
     "syncDays": 30,
+    "recalculateHistoricalPrices": false,
     "retentionDays": 0,
     "enwgEnabled": false,
     "enwgStartDate": "",

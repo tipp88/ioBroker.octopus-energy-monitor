@@ -24,6 +24,15 @@ require.cache[require.resolve('@iobroker/adapter-core')] = {
 const factory = require('./main.js');
 const adapter = factory({});
 
+function historicalAgreement(id, from, to, cents, monthly = 31) {
+	return {
+		id, validFrom: from, validTo: to, isActive: false,
+		standingChargeGrossRateInformation: [{date: '2020-01-01', rateValidToDate: null, grossRate: String(monthly), vatRate: '19'}],
+		unitRateInformation: {__typename: 'SimpleProductUnitRateInformation', latestGrossUnitRateCentsPerKwh: '999',
+			grossRateInformation: [{date: '2020-01-01', rateValidToDate: null, grossRate: String(cents), vatRate: '19'}]},
+	};
+}
+
 describe('Independent provider operation', () => {
 	function fixture(octopus, inexogy, staleObjectView = false) {
 		const a = factory({});
@@ -145,6 +154,56 @@ describe('Independent provider operation', () => {
 		expect(attempts).to.equal(2);
 		expect(calls.filter(call => call.command === 'inexogyDay')).to.have.length(2);
 		expect(calls.filter(call => call.command === 'storeState')).to.have.length(exportsBefore);
+	});
+
+	it('reprices positive legacy days only on opt-in with known prices and resumes after failure', async () => {
+		const {a, states, calls} = fixture(true, false);
+		await a.syncData();
+		const initialExports = calls.filter(call => call.command === 'storeState').length;
+		const master = a.fetchOctopusMasterData;
+		let agreements = [];
+		a.fetchOctopusMasterData = async () => { await master(); a.masterData.agreements = agreements; };
+		let attempts = 0;
+		a.fetchOctopus = async (start, end) => {
+			attempts++;
+			if (attempts === 1) { a.octopusRateLimited = true; return null; }
+			return a.calculateHistoricalUsage([{node:{startAt:start.toISOString(), value:'2'}}],start,end);
+		};
+		a.config.recalculateHistoricalPrices = true;
+		await a.syncData();
+		expect(attempts).to.equal(0); // No prices: no unnecessary consumption requests.
+		agreements = [historicalAgreement('historical', '2020-01-01T00:00:00Z', null, 20)];
+		a.config.recalculateHistoricalPrices = false;
+		await a.syncData();
+		expect(attempts).to.equal(0);
+		a.config.recalculateHistoricalPrices = true;
+		await a.syncData();
+		expect(Object.keys(states).some(id => id.endsWith('.pricingVersion'))).to.equal(false);
+		await a.syncData();
+		expect(Object.entries(states).find(([id]) => id.endsWith('.octopus.pricingVersion'))[1].val).to.equal(1);
+		await a.syncData();
+		expect(attempts).to.equal(2);
+		expect(calls.filter(call => call.command === 'storeState')).to.have.length(initialExports);
+	});
+
+	it('keeps missing historical costs null in states, aggregates, JSON and subsequent cached syncs', async () => {
+		const {a, states} = fixture(true, true);
+		const master = a.fetchOctopusMasterData;
+		a.fetchOctopusMasterData = async () => { await master(); a.masterData.agreements = []; };
+		a.fetchOctopus = async (start,end) => a.calculateHistoricalUsage([{node:{startAt:start.toISOString(),value:'2'}}],start,end);
+		await a.syncData();
+		const dailyCost = Object.keys(states).find(id => id.endsWith('.octopus.totalCost'));
+		expect(states[dailyCost].val).to.equal(null);
+		expect(states[dailyCost + 'Available'].val).to.equal(false);
+		expect(states['octopus.currentMonth.totalCost'].val).to.equal(null);
+		const json = JSON.parse(states['octopus.historyJson'].val)[0];
+		expect(json.total).to.equal(2);
+		expect(json.totalCost).to.equal(null);
+		expect(json.costStatus).to.equal('missing_historical_price');
+		// Force only Inexogy to be refreshed, so cached Octopus costs are rewritten.
+		states[Object.keys(states).find(id=>id.endsWith('.inexogy.dailyConsumption'))].val = 0;
+		await a.syncData();
+		expect(states[dailyCost].val).to.equal(null);
 	});
 
 	it('continues Inexogy when Octopus master data is unavailable', async () => {
@@ -464,6 +523,119 @@ describe('Independent provider operation', () => {
 		expect(errors).to.deep.equal([]);
 		expect(octopusRequests).to.equal(1);
 		expect(calls.filter(call => call.command === 'inexogyDay')).to.have.length(5);
+	});
+});
+
+describe('Historical agreement pricing', () => {
+	const {agreementAt, grossPrice} = require('./lib/historical-prices');
+	function setup(agreements) {
+		const a=factory({}); a.config={}; a.masterData={agreements, rates:[]}; return a;
+	}
+	it('selects expired agreements and rejects gaps, revocations and ambiguous overlaps', () => {
+		const old=historicalAgreement('old','2026-01-01T00:00:00Z','2026-06-01T00:00:00Z',20);
+		const next=historicalAgreement('new','2026-06-01T00:00:00Z',null,30);
+		expect(agreementAt([old,next],new Date('2026-05-31T23:59:59Z'))).to.equal(old);
+		expect(agreementAt([old,next],new Date('2026-06-01T00:00:00Z'))).to.equal(next);
+		expect(agreementAt([old],new Date('2026-06-01T00:00:00Z'))).to.equal(null);
+		expect(agreementAt([next,{...next}],new Date('2026-07-01T00:00:00Z'))).to.equal(null);
+		expect(agreementAt([{...next,isRevoked:true}],new Date('2026-07-01T00:00:00Z'))).to.equal(null);
+	});
+	it('uses gross-price validity with exclusive end dates and preserves zero/negative prices', () => {
+		const prices=[{date:'2026-01-01',rateValidToDate:'2026-02-01',grossRate:'0',vatRate:'19'},
+			{date:'2026-02-01',rateValidToDate:null,grossRate:'-5',vatRate:'19'}];
+		expect(grossPrice(prices,'2026-01-31',100).euros).to.equal(0);
+		expect(grossPrice(prices,'2026-02-01',100).euros).to.equal(-0.05);
+		expect(grossPrice(prices,'2025-12-31',100)).to.equal(null);
+		expect(grossPrice({date:'2026-01-01',grossRate:null},'2026-01-02',100)).to.equal(null);
+	});
+	it('prices an intraday agreement switch per interval, not using the latest active price', () => {
+		const a=setup([historicalAgreement('old','2026-01-01T00:00:00Z','2026-09-17T10:00:00Z',20),
+			historicalAgreement('new','2026-09-17T10:00:00Z',null,30)]);
+		const day=a.getBerlinDay(new Date('2026-09-17T12:00:00Z'));
+		const edges=['2026-09-17T09:45:00Z','2026-09-17T10:00:00Z'].map(startAt=>({node:{startAt,value:'1'}}));
+		const result=a.calculateHistoricalUsage(edges,day.start,day.end);
+		expect(result.total).to.equal(2);
+		expect(result.totalCost).to.be.closeTo(0.5,1e-10);
+		expect(result.slots.STANDARD.cost).to.be.closeTo(0.5,1e-10);
+		expect(result.costAvailable).to.equal(true);
+	});
+	it('preserves consumption without substituting latest prices or forecasts', () => {
+		const agreement=historicalAgreement('missing','2020-01-01T00:00:00Z',null,20);
+		agreement.unitRateInformation.grossRateInformation=[];
+		agreement.unitRateForecast=[{validFrom:'2026-01-01T00:00:00Z',latestGrossUnitRateCentsPerKwh:'20'}];
+		const a=setup([agreement]); const day=a.getBerlinDay(new Date('2026-09-17T12:00:00Z'));
+		const result=a.calculateHistoricalUsage([{node:{startAt:day.start.toISOString(),value:'2'}}],day.start,day.end);
+		expect(result.total).to.equal(2);
+		expect(result.totalCost).to.satisfy(Number.isNaN);
+		expect(result.costAvailable).to.equal(false);
+		expect(a.hasHistoricalDayPrices(day.start,day.end)).to.equal(false);
+	});
+	it('prorates historical monthly charges across calendar months and agreement changes', () => {
+		const a=setup([historicalAgreement('old','2020-01-01T00:00:00Z','2026-02-01T23:00:00Z',20,31),
+			historicalAgreement('new','2026-02-01T23:00:00Z',null,30,56)]);
+		const start=a.getBerlinDay(new Date('2026-01-31T12:00:00Z')).start;
+		const end=a.getBerlinDay(new Date('2026-02-02T12:00:00Z')).end;
+		expect(a.getHistoricalStandingCharge(start,end)).to.be.closeTo(1+31/28+2,1e-10);
+	});
+	it('keeps one daily share of a monthly charge on a 23 or 25 hour day', () => {
+		const a=setup([historicalAgreement('all','2020-01-01T00:00:00Z',null,20,31)]);
+		for(const date of ['2026-03-29','2026-10-25']) {
+			const day=a.getBerlinDay(new Date(date+'T12:00:00Z'));
+			expect(a.getHistoricalStandingCharge(day.start,day.end)).to.be.closeTo(1,1e-10);
+		}
+	});
+	it('uses historical VAT for EnWG net costs', () => {
+		const agreement=historicalAgreement('old','2020-01-01T00:00:00Z',null,116);
+		agreement.unitRateInformation.grossRateInformation[0].vatRate='16';
+		const a=setup([agreement]); a.enwgEnabled=true;
+		a.config={enwgStartDate:'2020-01-01',enwgTimeWindows:[]};
+		const day=a.getBerlinDay(new Date('2026-09-17T12:00:00Z'));
+		const result=a.calculateHistoricalUsage([{node:{startAt:day.start.toISOString(),value:'1'}}],day.start,day.end);
+		expect(result.enwgSlots.ST.costNet).to.be.closeTo(1,1e-10);
+	});
+	it('rejects dynamic forecasts even if a dated base price is supplied', () => {
+		const agreement=historicalAgreement('dynamic','2020-01-01T00:00:00Z',null,20);
+		agreement.product={code:'OCTOPUS-DYNAMIC'};
+		const a=setup([agreement]); const day=a.getBerlinDay(new Date('2026-09-17T12:00:00Z'));
+		const result=a.calculateHistoricalUsage([{node:{startAt:day.start.toISOString(),value:'1'}}],day.start,day.end);
+		expect(result.costAvailable).to.equal(false);
+		expect(result.total).to.equal(1);
+	});
+	it('aggregates old tariff names and historical charges across a billing-period contract change', async () => {
+		const old=historicalAgreement('old','2019-01-01T00:00:00Z','2020-01-31T23:00:00Z',20,31);
+		const next=historicalAgreement('next','2020-01-31T23:00:00Z',null,30,58);
+		for(const [agreement,name] of [[old,'OLD'],[next,'NEW']]) {
+			agreement.unitRateInformation={__typename:'TimeOfUseProductUnitRateInformation',rates:[{
+				timeslotName:name,grossRateInformation:agreement.unitRateInformation.grossRateInformation,
+				timeslotActivationRules:[{activeFromTime:'00:00',activeToTime:'24:00'}],
+			}]};
+		}
+		const a=setup([old,next]); a.config.billingPeriodStartDay=17; a.namespace='octopus-energy-monitor.0';
+		a.masterData.rates=[{name:'NEW'}]; a.masterData.monthlyStandingCharge=999;
+		const states={}; const objects={};
+		a.getStateAsync=async id=>states[id.replace(a.namespace+'.','')] || null;
+		a.setStateAsync=async (id,state)=>{states[id]=state;};
+		a.setObjectNotExistsAsync=async()=>{}; a.delObjectAsync=async()=>{};
+		for(let i=0;i<31;i++) {
+			const date=new Date(Date.UTC(2020,0,17+i,12)).toISOString().slice(0,10).replaceAll('-','.');
+			const base=`history.${date}.octopus`;
+			states[base+'.dailyConsumption']={val:1}; states[base+'.totalCost']={val:i<15?0.2:0.3};
+			states[base+(i<15?'.oldConsumption':'.newConsumption')]={val:1};
+			states[base+(i<15?'.oldCost':'.newCost')]={val:i<15?0.2:0.3};
+			objects[a.namespace+'.'+base+'.dailyConsumption']={type:'state'};
+		}
+		await a.aggregateHistory(objects);
+		const period='octopus.periods.2020-01-17';
+		expect(states[period+'.oldConsumption'].val).to.equal(15);
+		expect(states[period+'.newConsumption'].val).to.equal(16);
+		expect(states[period+'.totalCost'].val).to.equal(7.8);
+		expect(states[period+'.totalCostWithStandingCharge'].val).to.equal(54.8);
+		states['history.2020.01.17.octopus.totalCost']={val:null};
+		await a.aggregateHistory(objects);
+		expect(states[period+'.totalConsumption'].val).to.equal(31);
+		expect(states[period+'.totalCost'].val).to.equal(null);
+		expect(states[period+'.totalCostAvailable'].val).to.equal(false);
+		expect(states[period+'.totalCostWithStandingCharge'].val).to.equal(null);
 	});
 });
 

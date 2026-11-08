@@ -67,8 +67,19 @@ To install this adapter in your ioBroker environment:
 
 Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
+### Historical pricing (development)
+
+Newly fetched days use the agreement and dated gross prices applicable to each interval. Missing or ambiguous prices do not discard consumption: costs become `null`, with `totalCostAvailable=false` and daily `costStatus=missing_historical_price`. Dynamic tariffs identified by forecasts or product names remain unpriced until actual historical interval prices are supported; forecasts and current prices are not substituted.
+
+Gross monthly standing charges are prorated by calendar day using each month's length and the applicable agreement/price period. `totalCostWithStandingChargeAvailable` indicates whether the combined amount is available. This is an estimate, not a supplier invoice.
+
+Existing positive days remain cached. Enable **Recalculate legacy days with historical prices** to correct them once within the configured sync/retention range, only when complete historical consumption prices and standing charges are available. Per-source version markers resume unfinished work after API limits or restarts. Existing database intervals are not exported again. Uncorrected JSON entries carry `costStatus=legacy_unverified`; their previous amounts are preserved. Disabling the option stops further legacy corrections.
+
 ## Changelog
 ### WORK IN PROGRESS
+* (tipp88) Resolve historical consumption prices and monthly standing charges by agreement and gross-price validity.
+* (tipp88) Preserve consumption when historical prices are missing; expose unavailable costs as null with availability indicators.
+* (tipp88) Add opt-in, versioned historical repricing within sync/retention limits without repeated interval exports.
 * (tipp88) Use Europe/Berlin calendar-day boundaries and tariff times, including 23/25-hour daylight-saving days.
 * (tipp88) Exclude out-of-day intervals while retaining the final Inexogy interval ending at midnight.
 * (tipp88) Updated axios from 1.20.0 to 1.21.0.
