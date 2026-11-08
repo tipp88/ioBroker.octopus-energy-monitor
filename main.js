@@ -2,6 +2,7 @@
 const utils = require('@iobroker/adapter-core');
 const axios = require('axios');
 const { agreementAt, grossPrice, tariffRates } = require('./lib/historical-prices');
+const apiPolicy = require('./lib/api-policy');
 
 const AXIOS_TIMEOUT = 30000;
 const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
@@ -28,6 +29,19 @@ class EnergyCompare extends utils.Adapter {
 		this.syncObjectCache = new Map();
 		this.syncInProgress = false;
 		this.octopusRateLimited = false;
+		this.stopping = false;
+		this.requestController = new AbortController();
+		this.octopusTokenExpiresAt = 0;
+		/** @type {Promise<void>|null} */
+		this.tokenRefresh = null;
+		/** @type {Promise<void>|null} */
+		this.activeSync = null;
+		this.apiCooldowns = new Map();
+		this.http = {
+			get: (url, options) => axios.get(url, { ...options, signal: this.requestController.signal }),
+			post: (url, payload, options) =>
+				axios.post(url, payload, { ...options, signal: this.requestController.signal }),
+		};
 	}
 
 	sanitizeIdSegment(raw) {
@@ -108,6 +122,9 @@ class EnergyCompare extends utils.Adapter {
 		this.log.info(`Scheduling data sync every ${intervalMinutes} minutes.`);
 
 		const scheduleNextSync = () => {
+			if (this.stopping) {
+				return;
+			}
 			this.syncInterval = this.setTimeout(
 				async () => {
 					await this.syncData();
@@ -355,6 +372,9 @@ class EnergyCompare extends utils.Adapter {
 	 * @param {string} [unit] State Unit
 	 */
 	async writeStateObject(id, name, value, role = 'value', type = 'number', unit = '') {
+		if (this.stopping) {
+			throw new Error('Adapter stopping');
+		}
 		if (type === 'number' && typeof value === 'number' && !Number.isFinite(value)) {
 			value = null;
 		}
@@ -426,27 +446,113 @@ class EnergyCompare extends utils.Adapter {
 		}
 	}
 
-	async fetchOctopusMasterData(retry = true) {
-		try {
-			const apiDomain = 'https://api.oeg-kraken.energy/v1/graphql/';
+	async waitForRequest(ms) {
+		await apiPolicy.delay(ms, this.requestController.signal);
+	}
 
-			if (!this.octopusAuthToken) {
-				const authPayload = {
-					query: `mutation obtainKrakenToken($input: ObtainJSONWebTokenInput!) {
-						obtainKrakenToken(input: $input) { token }
-					}`,
+	async ensureOctopusToken(force = false) {
+		if (this.stopping) {
+			throw new Error('Adapter stopping');
+		}
+		if (this.tokenRefresh) {
+			return this.tokenRefresh;
+		}
+		if (this.octopusAuthToken && !this.octopusTokenExpiresAt) {
+			this.octopusTokenExpiresAt = apiPolicy.tokenExpiry(this.octopusAuthToken);
+		}
+		if (!force && this.octopusAuthToken && Date.now() < this.octopusTokenExpiresAt - 60000) {
+			return;
+		}
+		this.tokenRefresh = (async () => {
+			const response = await this.http.post(
+				'https://api.oeg-kraken.energy/v1/graphql/',
+				{
+					query: 'mutation obtainKrakenToken($input: ObtainJSONWebTokenInput!) { obtainKrakenToken(input: $input) { token } }',
 					variables: { input: { email: this.config.octopusEmail, password: this.config.octopusPassword } },
-				};
-				const authRes = await axios.post(apiDomain, authPayload, {
-					headers: { 'Content-Type': 'application/json' },
+				},
+				{ timeout: AXIOS_TIMEOUT, validateStatus: () => true },
+			);
+			const token = response.data?.data?.obtainKrakenToken?.token;
+			if (response.status !== 200 || !token) {
+				throw new Error(`Octopus authentication failed (HTTP ${response.status})`);
+			}
+			this.octopusAuthToken = token;
+			this.octopusTokenExpiresAt = apiPolicy.tokenExpiry(token);
+		})();
+		try {
+			await this.tokenRefresh;
+		} finally {
+			this.tokenRefresh = null;
+		}
+	}
+
+	async requestOctopus(payload, endpoint = 'https://api.oeg-kraken.energy/v1/graphql/') {
+		if (this.stopping) {
+			throw new Error('Adapter stopping');
+		}
+		const retryAt = this.apiCooldowns.get(endpoint) || 0;
+		if (retryAt > Date.now()) {
+			return {
+				status: 429,
+				statusText: 'API cooldown',
+				headers: { 'retry-after': String(Math.ceil((retryAt - Date.now()) / 1000)) },
+				data: {
+					errors: [
+						{ extensions: { errorCode: 'KT-CT-1199' }, message: 'Request deferred during API cooldown' },
+					],
+				},
+			};
+		}
+		const credentials = !!(this.config.octopusEmail && this.config.octopusPassword);
+		if (credentials) {
+			await this.ensureOctopusToken();
+		}
+		const readOnly = !/^\s*mutation\b/.test(payload.query);
+		let refreshed = false;
+		for (let attempt = 0; ; attempt++) {
+			let response;
+			try {
+				response = await this.http.post(endpoint, payload, {
+					headers: { 'Content-Type': 'application/json', Authorization: this.octopusAuthToken },
+					validateStatus: () => true,
 					timeout: AXIOS_TIMEOUT,
 				});
-				const token = authRes.data?.data?.obtainKrakenToken?.token;
-				if (!token) {
-					throw new Error('Octopus Login failed.');
+			} catch (error) {
+				if (this.stopping || !readOnly || attempt >= 2) {
+					throw error;
 				}
-				this.octopusAuthToken = token;
+				await this.waitForRequest(1000 * 2 ** attempt);
+				continue;
 			}
+			if (credentials && !refreshed && apiPolicy.isAuthenticationError(response)) {
+				refreshed = true;
+				await this.ensureOctopusToken(true);
+				continue;
+			}
+			const limited = apiPolicy.isRateLimited(response);
+			const retryAfter = apiPolicy.retryAfterMs(response.headers?.['retry-after']);
+			if (
+				readOnly &&
+				attempt < 2 &&
+				(limited || response.status >= 500) &&
+				(retryAfter === null || retryAfter <= 5000)
+			) {
+				await this.waitForRequest(Math.max(retryAfter || 0, 1000 * 2 ** attempt));
+				continue;
+			}
+			if (limited) {
+				this.apiCooldowns.set(endpoint, Date.now() + Math.max(retryAfter || 0, 15 * 60000));
+				if (endpoint.includes('oeg-kraken')) {
+					this.octopusRateLimited = true;
+				}
+			}
+			return response;
+		}
+	}
+
+	async fetchOctopusMasterData() {
+		try {
+			const apiDomain = 'https://api.oeg-kraken.energy/v1/graphql/';
 
 			const masterDataPayload = {
 				query: `query MyQuery($accountNumber: String!) {
@@ -479,6 +585,7 @@ class EnergyCompare extends utils.Adapter {
 										}
 									}
 								}
+								maloNumber
 								meters { id number }
 								mop { name }
 								dno { name }
@@ -490,18 +597,9 @@ class EnergyCompare extends utils.Adapter {
 				variables: { accountNumber: this.config.octopusAccount },
 			};
 
-			const dataRes = await axios.post(apiDomain, masterDataPayload, {
-				headers: { 'Content-Type': 'application/json', Authorization: this.octopusAuthToken },
-				validateStatus: () => true,
-				timeout: AXIOS_TIMEOUT,
-			});
+			const dataRes = await this.requestOctopus(masterDataPayload, apiDomain);
 
 			if (dataRes.status !== 200 || !dataRes.data?.data?.account) {
-				if (retry) {
-					this.log.debug('Token might be expired, retrying login...');
-					this.octopusAuthToken = null;
-					return await this.fetchOctopusMasterData(false);
-				}
 				throw new Error(
 					`Master data fetch failed: ${
 						dataRes.data?.errors ? JSON.stringify(dataRes.data.errors) : dataRes.statusText
@@ -571,11 +669,7 @@ class EnergyCompare extends utils.Adapter {
 				};
 				this.log.debug(`Fetching standing charge for agreement ID ${agreementId}...`);
 				try {
-					const scRes = await axios.post(apiDomain, standingChargePayload, {
-						headers: { 'Content-Type': 'application/json', Authorization: this.octopusAuthToken },
-						validateStatus: () => true,
-						timeout: AXIOS_TIMEOUT,
-					});
+					const scRes = await this.requestOctopus(standingChargePayload, apiDomain);
 					this.log.debug(
 						`Standing charge API response status: ${scRes.status}, data: ${JSON.stringify(scRes.data)}`,
 					);
@@ -604,6 +698,7 @@ class EnergyCompare extends utils.Adapter {
 			const masterData = {
 				balance: account.electricityBalance ? parseFloat(account.electricityBalance) / 100 : 0,
 				propertyId: propertyId,
+				marketSupplyPointId: malo.maloNumber,
 				tariffName: activeAgreement.product?.displayName || 'Unknown',
 				isTimeOfUse: activeAgreement.product?.isTimeOfUse || false,
 				meterNumber: malo.meters?.[0]?.number || 'Unknown',
@@ -669,11 +764,7 @@ class EnergyCompare extends utils.Adapter {
 				},
 			};
 
-			const dataRes = await axios.post(apiDomain, readingsPayload, {
-				headers: { 'Content-Type': 'application/json', Authorization: this.octopusAuthToken },
-				validateStatus: () => true,
-				timeout: AXIOS_TIMEOUT,
-			});
+			const dataRes = await this.requestOctopus(readingsPayload, apiDomain);
 
 			if (dataRes.status !== 200 || !dataRes.data?.data?.electricityMeterReadings) {
 				this.log.warn(
@@ -1149,6 +1240,48 @@ class EnergyCompare extends utils.Adapter {
 		return result;
 	}
 
+	async fetchMeasurementPages(payload) {
+		const edges = new Map();
+		const cursors = new Set();
+		for (let page = 0; page < 100; page++) {
+			const response = await this.requestOctopus(payload);
+			if (response.status !== 200 || response.data?.errors?.length) {
+				return response;
+			}
+			const connection =
+				response.data?.data?.property?.measurements || response.data?.data?.account?.property?.measurements;
+			if (!connection) {
+				throw new Error('Octopus measurements response has no connection');
+			}
+			for (const edge of connection.edges || []) {
+				const node = edge.node;
+				const key = node.startAt;
+				const previous = edges.get(key);
+				if (
+					previous &&
+					(Number(previous.node.value) !== Number(node.value) || previous.node.endAt !== node.endAt)
+				) {
+					throw new Error(`Conflicting Octopus intervals at ${node.startAt}`);
+				}
+				edges.set(key, edge);
+			}
+			if (!connection.pageInfo?.hasNextPage) {
+				return {
+					...response,
+					data: { data: { account: { property: { measurements: { edges: [...edges.values()] } } } } },
+				};
+			}
+			const cursor = connection.pageInfo.endCursor;
+			if (!cursor || cursors.has(cursor)) {
+				throw new Error('Octopus pagination cursor did not advance');
+			}
+			cursors.add(cursor);
+			payload.variables.after = cursor;
+			await this.waitForRequest(250);
+		}
+		throw new Error('Octopus pagination exceeded its safety limit');
+	}
+
 	async fetchOctopus(start, end) {
 		try {
 			if (!this.masterData) {
@@ -1160,35 +1293,41 @@ class EnergyCompare extends utils.Adapter {
 
 			const fetchRaw = !!this.masterData.agreements || isSplit || this.config.enableHistorySync;
 
-			const apiDomain = 'https://api.oeg-kraken.energy/v1/graphql/';
 			const dateString = this.getBerlinDay(start).date;
 
 			const usagePayload = {
-				query: `query getSmartMeterUsage($accountNumber: String!, $propertyId: ID!, $date: Date!) {
-					account(accountNumber: $accountNumber) {
+				query: `query getSmartMeterUsage($propertyId: ID!, $startAt: DateTime!, $endAt: DateTime!, $after: String, $utilityFilters: [UtilityFiltersInput!]!) {
 						property(id: $propertyId) {
 							measurements(
-								utilityFilters: {electricityFilters: {readingFrequencyType: ${fetchRaw ? 'RAW_INTERVAL' : 'DAY_INTERVAL'}, readingQuality: ACTUAL}}
-								startOn: $date
-								first: ${fetchRaw ? 150 : 1}
+								utilityFilters: $utilityFilters
+								startAt: $startAt endAt: $endAt timezone: "Europe/Berlin"
+								first: 100 after: $after
 							) {
+								pageInfo { hasNextPage endCursor }
 								edges { node { ... on IntervalMeasurementType { endAt startAt value } } }
 							}
 						}
-					}
 				}`,
 				variables: {
-					accountNumber: this.config.octopusAccount,
 					propertyId: this.masterData.propertyId,
-					date: dateString,
+					startAt: start.toISOString(),
+					endAt: end.toISOString(),
+					after: null,
+					utilityFilters: [
+						{
+							electricityFilters: {
+								readingFrequencyType: fetchRaw ? 'RAW_INTERVAL' : 'DAY_INTERVAL',
+								readingQuality: 'ACTUAL',
+								...(this.masterData.marketSupplyPointId
+									? { marketSupplyPointId: this.masterData.marketSupplyPointId }
+									: {}),
+							},
+						},
+					],
 				},
 			};
 
-			const dataRes = await axios.post(apiDomain, usagePayload, {
-				headers: { 'Content-Type': 'application/json', Authorization: this.octopusAuthToken },
-				validateStatus: () => true,
-				timeout: AXIOS_TIMEOUT,
-			});
+			const dataRes = await this.fetchMeasurementPages(usagePayload);
 
 			const graphqlErrors = Array.isArray(dataRes.data?.errors) ? dataRes.data.errors : [];
 			if (graphqlErrors.length > 0) {
@@ -1370,7 +1509,7 @@ class EnergyCompare extends utils.Adapter {
 
 	async fetchInexogyReadings(meterId, headers, fromDate, toDate) {
 		const url = `https://api.inexogy.com/public/v1/readings?meterId=${meterId}&from=${fromDate.getTime()}&to=${toDate.getTime()}&resolution=fifteen_minutes`;
-		const res = await axios.get(url, { headers, validateStatus: () => true, timeout: AXIOS_TIMEOUT });
+		const res = await this.http.get(url, { headers, validateStatus: () => true, timeout: AXIOS_TIMEOUT });
 		if (res.status === 200 && Array.isArray(res.data)) {
 			return res.data;
 		}
@@ -1388,7 +1527,7 @@ class EnergyCompare extends utils.Adapter {
 			);
 
 			if (!this.inexogyMeterId) {
-				const meterRes = await axios.get('https://api.inexogy.com/public/v1/meters', {
+				const meterRes = await this.http.get('https://api.inexogy.com/public/v1/meters', {
 					headers: { Authorization: `Basic ${basicAuth}` },
 					validateStatus: () => true,
 					timeout: AXIOS_TIMEOUT,
@@ -1503,7 +1642,7 @@ class EnergyCompare extends utils.Adapter {
 			);
 			const headers = { Authorization: `Basic ${basicAuth}` };
 
-			const meterRes = await axios.get('https://api.inexogy.com/public/v1/meters', {
+			const meterRes = await this.http.get('https://api.inexogy.com/public/v1/meters', {
 				headers,
 				validateStatus: () => true,
 				timeout: AXIOS_TIMEOUT,
@@ -1551,7 +1690,7 @@ class EnergyCompare extends utils.Adapter {
 				await this.writeStateObject('inexogy.info.zip', 'ZIP Code', meter.location.zip || '', 'text', 'string');
 			}
 
-			const readingRes = await axios.get(
+			const readingRes = await this.http.get(
 				`https://api.inexogy.com/public/v1/last_reading?meterId=${this.inexogyMeterId}`,
 				{ headers, validateStatus: () => true, timeout: AXIOS_TIMEOUT },
 			);
@@ -1629,11 +1768,7 @@ class EnergyCompare extends utils.Adapter {
 				variables: { account: this.config.octopusAccount },
 			};
 
-			const res = await axios.post(apiDomain, payload, {
-				headers: { 'Content-Type': 'application/json', Authorization: this.octopusAuthToken },
-				validateStatus: () => true,
-				timeout: AXIOS_TIMEOUT,
-			});
+			const res = await this.requestOctopus(payload, apiDomain);
 
 			if (res.status === 200 && res.data?.data?.devices) {
 				const devices = res.data.data.devices;
@@ -1783,11 +1918,7 @@ class EnergyCompare extends utils.Adapter {
 				variables: { deviceID: deviceId },
 			};
 
-			const res = await axios.post(apiDomain, payload, {
-				headers: { 'Content-Type': 'application/json', Authorization: this.octopusAuthToken },
-				validateStatus: () => true,
-				timeout: AXIOS_TIMEOUT,
-			});
+			const res = await this.requestOctopus(payload, apiDomain);
 
 			if (res.status === 200 && res.data?.data?.updateDeviceSmartControl) {
 				this.log.info(
@@ -1924,6 +2055,18 @@ class EnergyCompare extends utils.Adapter {
 	}
 
 	async syncData() {
+		if (this.stopping || this.activeSync) {
+			return;
+		}
+		this.activeSync = this.performSync();
+		try {
+			await this.activeSync;
+		} finally {
+			this.activeSync = null;
+		}
+	}
+
+	async performSync() {
 		const adapterObjects = await this.getAdapterObjectsAsync();
 		await this.cleanupLegacyHistory(adapterObjects);
 		let syncDays = Number(this.config.syncDays) || 30;
@@ -1968,6 +2111,8 @@ class EnergyCompare extends utils.Adapter {
 
 		this.log.debug(`Starting ${syncDays}-day retroactive data sync...`);
 
+		this.octopusRateLimited =
+			(this.apiCooldowns.get('https://api.oeg-kraken.energy/v1/graphql/') || 0) > Date.now();
 		this.masterData = null;
 		if (this.hasOctopus) {
 			await this.fetchOctopusMasterData();
@@ -1979,7 +2124,6 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		let historyPayloads = [];
-		this.octopusRateLimited = false;
 		this.syncObjectCache.clear();
 		for (const [id, object] of Object.entries(adapterObjects)) {
 			this.syncObjectCache.set(id, object);
@@ -1990,6 +2134,9 @@ class EnergyCompare extends utils.Adapter {
 			// Fetch recent days first so the active billing period is available even if the API limits a startup burst.
 			const syncDate = new Date();
 			for (let i = 1; i <= syncDays; i++) {
+				if (this.stopping) {
+					return;
+				}
 				const { start: targetDate, end: endDate, date } = this.getBerlinDay(syncDate, -i);
 				const [yearStr, monthStr, dayStr] = date.split('-');
 
@@ -2411,6 +2558,9 @@ class EnergyCompare extends utils.Adapter {
 				}
 			}
 
+			if (this.stopping) {
+				return;
+			}
 			// Reset config changed flag since we finished the sync
 			this.enwgConfigChanged = false;
 
@@ -3169,7 +3319,9 @@ class EnergyCompare extends utils.Adapter {
 		}
 	}
 
-	onUnload(callback) {
+	async onUnload(callback) {
+		this.stopping = true;
+		this.requestController.abort();
 		try {
 			if (this.syncInterval) {
 				this.clearTimeout(this.syncInterval);
@@ -3180,6 +3332,7 @@ class EnergyCompare extends utils.Adapter {
 			if (this.smartChargeTimeout) {
 				this.clearTimeout(this.smartChargeTimeout);
 			}
+			await this.activeSync;
 			callback();
 		} catch {
 			callback();
