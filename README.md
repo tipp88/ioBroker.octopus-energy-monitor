@@ -69,6 +69,11 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 
 ## Changelog
 ### WORK IN PROGRESS
+* (tipp88) Updated axios from 1.20.0 to 1.21.0.
+* (tipp88) Updated development dependencies: @iobroker/testing 6.1.0 → 6.3.1, @iobroker/types 7.2.2 → 7.2.5, and @types/node 22.20.1 → 22.20.5.
+* (tipp88) Handle all Octopus tariff windows for consumption and cost calculations, including Inexogy comparisons.
+* (tipp88) Reject unmatched tariff intervals instead of assigning them to the first tariff.
+* (tipp88) Recalculate affected multi-window tariff days once within the sync/retention range, resuming after API limits without re-exporting cached intervals.
 * (tipp88) Compare only finite, positive daily consumption values while continuing to refetch zero-consumption days.
 * (tipp88) Log discrepancies only when a day's stored comparison changes to a discrepancy.
 * (tipp88) Mark unavailable comparisons explicitly and clear outdated daily and tariff-slot differences.

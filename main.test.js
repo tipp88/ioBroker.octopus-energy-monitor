@@ -62,7 +62,7 @@ describe('Independent provider operation', () => {
 		};
 		a.fetchOctopusMasterData = async () => {
 			calls.push({ command: 'octopusMaster' });
-			a.masterData = { rates: [{ name: 'Standard', rateEuros: 0.3 }], isTimeOfUse: false };
+			a.masterData = { rates: [{ name: 'Standard', rateEuros: 0.3, from: '00:00', to: '24:00' }], isTimeOfUse: false };
 			return a.masterData;
 		};
 		a.fetchOctopusDevices = async () => {};
@@ -116,6 +116,36 @@ describe('Independent provider operation', () => {
 			expect(calls.filter(call => call.command === 'storeState')).to.have.length(exportsBefore);
 		});
 	}
+
+	it('corrects cached multi-window days once, resumes failures and does not export intervals again', async () => {
+		const { a, states, calls } = fixture(true, true);
+		await a.syncData();
+		const master = a.fetchOctopusMasterData;
+		a.fetchOctopusMasterData = async () => {
+			await master();
+			a.masterData.rates[0].windows = [{ from: '00:00', to: '12:00' }, { from: '12:00', to: '24:00' }];
+		};
+		const fetchDay = a.fetchOctopus;
+		let attempts = 0;
+		a.fetchOctopus = async (...args) => {
+			attempts++;
+			if (attempts === 1) {
+				a.octopusRateLimited = true;
+				return null;
+			}
+			return fetchDay(...args);
+		};
+		const exportsBefore = calls.filter(call => call.command === 'storeState').length;
+		await a.syncData();
+		expect(Object.keys(states).some(id => id.endsWith('.octopus.tariffWindowVersion'))).to.equal(false);
+		expect(Object.keys(states).some(id => id.endsWith('.inexogy.tariffWindowVersion'))).to.equal(true);
+		await a.syncData();
+		expect(Object.keys(states).some(id => id.endsWith('.octopus.tariffWindowVersion'))).to.equal(true);
+		await a.syncData();
+		expect(attempts).to.equal(2);
+		expect(calls.filter(call => call.command === 'inexogyDay')).to.have.length(2);
+		expect(calls.filter(call => call.command === 'storeState')).to.have.length(exportsBefore);
+	});
 
 	it('continues Inexogy when Octopus master data is unavailable', async () => {
 		const { a, states, calls, errors } = fixture(true, true);
@@ -434,6 +464,83 @@ describe('Independent provider operation', () => {
 		expect(errors).to.deep.equal([]);
 		expect(octopusRequests).to.equal(1);
 		expect(calls.filter(call => call.command === 'inexogyDay')).to.have.length(5);
+	});
+});
+
+describe('Octopus Heat activation windows', () => {
+	const rates = [
+		{ name: 'NIEDRIG', rateEuros: 0.1883, windows: [{ from: '02:00', to: '06:00' }, { from: '12:00', to: '16:00' }] },
+		{ name: 'STANDARD', rateEuros: 0.258, windows: [{ from: '06:00', to: '12:00' }, { from: '16:00', to: '18:00' }, { from: '21:00', to: '02:00' }] },
+		{ name: 'HOCH', rateEuros: 0.3, windows: [{ from: '18:00', to: '21:00' }] },
+	];
+	let a;
+	let originalPost;
+	beforeEach(() => {
+		a = factory({});
+		a.config = {};
+		a.masterData = { isTimeOfUse: true, rates };
+		originalPost = axios.post;
+	});
+	afterEach(() => { axios.post = originalPost; });
+
+	it('preserves every activation rule from the master data API', async () => {
+		a.octopusAuthToken = 'test';
+		a.writeMasterDataStates = async () => {};
+		axios.post = async () => ({ status: 200, data: { data: { account: { properties: [{
+			id: 'property', electricityMalos: [{ agreements: [{
+				isActive: true, product: { isTimeOfUse: true },
+				unitRateInformation: {
+					__typename: 'TimeOfUseProductUnitRateInformation',
+					rates: rates.map(rate => ({ timeslotName: rate.name, latestGrossUnitRateCentsPerKwh: String(rate.rateEuros * 100),
+						timeslotActivationRules: rate.windows.map(window => ({ activeFromTime: window.from, activeToTime: window.to })),
+					})),
+				},
+			}] }],
+		}] } } } });
+		const data = await a.fetchOctopusMasterData();
+		expect(data.rates.map(rate => rate.windows)).to.deep.equal(rates.map(rate => rate.windows));
+	});
+
+	it('assigns 8 low, 13 standard and 3 peak hours and calculates their costs', async () => {
+		axios.post = async () => ({ status: 200, data: { data: { account: { property: { measurements: {
+			edges: Array.from({ length: 96 }, (_,i) => ({ node: { startAt: new Date(2026, 10, 1, 0, i * 15).toISOString(), value: '0.25' } })),
+		} } } } } });
+		const result = await a.fetchOctopus(new Date(2026, 10, 1), new Date(2026, 10, 2));
+		expect(result.total).to.equal(24);
+		expect(result.slots.NIEDRIG.consumption).to.equal(8);
+		expect(result.slots.STANDARD.consumption).to.equal(13);
+		expect(result.slots.HOCH.consumption).to.equal(3);
+		expect(result.totalCost).to.be.closeTo(8 * 0.1883 + 13 * 0.258 + 3 * 0.3, 1e-10);
+	});
+
+	it('uses the same windows for Inexogy interval consumption', async () => {
+		a.inexogyMeterId = 'test';
+		a.fetchInexogyReadings = async () => Array.from({ length: 97 }, (_, i) => ({
+			time: new Date(2026, 10, 1, 0, i * 15).getTime(), values: { energy: (1 + i * 0.25) * 10000000000 },
+		}));
+		const result = await a.fetchInexogy(new Date(2026, 10, 1), new Date(2026, 10, 2));
+		expect(result.slots.NIEDRIG.consumption).to.equal(8);
+		expect(result.slots.STANDARD.consumption).to.equal(13);
+		expect(result.slots.HOCH.consumption).to.equal(3);
+	});
+
+	it('does not fall back to the first tariff when no window matches', async () => {
+		a.masterData.rates = [rates[0], rates[2]];
+		const errors = [];
+		a.log.error = message => errors.push(message);
+		axios.post = async () => ({ status: 200, data: { data: { account: { property: { measurements: {
+			edges: [{ node: { startAt: new Date(2026, 10, 1, 10).toISOString(), value: '1' } }],
+		} } } } } });
+		expect(await a.fetchOctopus(new Date(2026, 10, 1), new Date(2026, 10, 2))).to.equal(null);
+		expect(errors[0]).to.include('No Octopus tariff window matches');
+	});
+
+	it('keeps legacy GO/standard and midnight boundaries working', () => {
+		expect(a.rateMatchesHour({ from: '00:00', to: '05:00' }, 0)).to.equal(true);
+		expect(a.rateMatchesHour({ from: '00:00', to: '05:00' }, 5)).to.equal(false);
+		expect(a.rateMatchesHour({ from: '05:00', to: '00:00' }, 23.75)).to.equal(true);
+		expect(a.rateMatchesHour(rates[1], 1.75)).to.equal(true);
+		expect(a.rateMatchesHour(rates[1], 2)).to.equal(false);
 	});
 });
 

@@ -505,6 +505,10 @@ class EnergyCompare extends utils.Adapter {
 					rateEuros: parseFloat(r.latestGrossUnitRateCentsPerKwh) / 100,
 					from: r.timeslotActivationRules[0]?.activeFromTime,
 					to: r.timeslotActivationRules[0]?.activeToTime,
+					windows: r.timeslotActivationRules.map(rule => ({
+						from: rule.activeFromTime,
+						to: rule.activeToTime,
+					})),
 				}));
 			} else {
 				rates = [
@@ -899,6 +903,28 @@ class EnergyCompare extends utils.Adapter {
 		};
 	}
 
+	hasMultiWindowTariff() {
+		return !!this.masterData?.rates.some(rate => rate.windows?.length > 1);
+	}
+
+	/**
+	 * Match every activation window, including legacy single-window rates.
+	 *
+	 * @param {{from?: string, to?: string, windows?: Array<{from: string, to: string}>}} rate Tariff definition
+	 * @param {number} hour Local hour, including fractional minutes
+	 */
+	rateMatchesHour(rate, hour) {
+		const windows = rate.windows || [{ from: rate.from, to: rate.to }];
+		return windows.some(window => {
+			if (!window.from || !window.to) {
+				return false;
+			}
+			const from = this.timeStrToHours(window.from);
+			const to = this.timeStrToHours(window.to) || 24;
+			return from < to ? hour >= from && hour < to : hour >= from || hour < to;
+		});
+	}
+
 	async fetchOctopus(start, _end) {
 		try {
 			if (!this.masterData) {
@@ -1024,28 +1050,18 @@ class EnergyCompare extends utils.Adapter {
 					let slotted = false;
 					let matchedRate = null;
 					for (const rate of this.masterData.rates) {
-						const fromH = this.timeStrToHours(rate.from);
-						const toH = this.timeStrToHours(rate.to) || 24;
-
-						let inSlot = false;
-						if (fromH < toH) {
-							inSlot = nodeHour >= fromH && nodeHour < toH;
-						} else {
-							// wraps around midnight, e.g. 23:00 to 05:00
-							inSlot = nodeHour >= fromH || nodeHour < toH;
-						}
-
-						if (inSlot) {
+						if (this.rateMatchesHour(rate, nodeHour)) {
 							result.slots[rate.name].consumption += nodeVal;
 							matchedRate = rate;
 							slotted = true;
 							break;
 						}
 					}
-					// fallback to first slot if not matched
-					if (!slotted && this.masterData.rates.length > 0) {
-						result.slots[this.masterData.rates[0].name].consumption += nodeVal;
-						matchedRate = this.masterData.rates[0];
+					if (!slotted) {
+						this.log.error(
+							`No Octopus tariff window matches ${startDt.toISOString()}. Skipping day ${dateString} to avoid incorrect costs.`,
+						);
+						return null;
 					}
 
 					// If EnWG is active, calculate EnWG rates for the interval
@@ -1238,21 +1254,15 @@ class EnergyCompare extends utils.Adapter {
 					}
 				}
 
-				// Distribute into standard slots
-				for (const rate of rates) {
-					const fromH = this.timeStrToHours(rate.from);
-					const toH = this.timeStrToHours(rate.to) || 24;
-
-					let inSlot = false;
-					if (fromH < toH) {
-						inSlot = nodeHour >= fromH && nodeHour < toH;
-					} else {
-						inSlot = nodeHour >= fromH || nodeHour < toH;
-					}
-					if (inSlot) {
-						result.slots[rate.name].consumption += interval.val;
-						break;
-					}
+				// Use the same activation windows as the Octopus calculation.
+				const rate = rates.find(candidate => this.rateMatchesHour(candidate, nodeHour));
+				if (rate) {
+					result.slots[rate.name].consumption += interval.val;
+				} else if (rates.length) {
+					this.log.error(
+						`No Octopus tariff window matches Inexogy interval ${slotDt.toISOString()}. Skipping day to avoid incorrect tariff totals.`,
+					);
+					return null;
 				}
 			}
 
@@ -1766,9 +1776,17 @@ class EnergyCompare extends utils.Adapter {
 						type: 'state',
 					});
 				}
-				const hasOctopus = !this.hasOctopus || this.isDayCached(checkOctopus, null);
+				// Per-source markers survive restarts and quota-limited synchronization runs.
+				const multiWindowTariff = this.hasOctopus && this.hasMultiWindowTariff();
+				const needsTariffCorrection = async source =>
+					multiWindowTariff &&
+					(await this.getStateAsync(`${basePathDay}.${source}.tariffWindowVersion`))?.val !== 1;
+				const correctOctopusTariff = this.hasOctopus && (await needsTariffCorrection('octopus'));
+				const octopusCached = this.isDayCached(checkOctopus, null);
+				const hasOctopus = !this.hasOctopus || (octopusCached && !correctOctopusTariff);
 
 				let hasInexogyData = true;
+				let inexogyCached = true;
 				if (this.hasInexogy) {
 					const checkInexogy = await this.getStateAsync(`${basePathDay}.inexogy.dailyConsumption`);
 					if (checkInexogy?.val !== null && checkInexogy?.val !== undefined) {
@@ -1776,14 +1794,15 @@ class EnergyCompare extends utils.Adapter {
 							type: 'state',
 						});
 					}
-					hasInexogyData = this.isDayCached(checkInexogy, null);
+					inexogyCached = this.isDayCached(checkInexogy, null);
+					hasInexogyData = inexogyCached && !(await needsTariffCorrection('inexogy'));
 				}
 
 				const enwgActive = this.isEnwgActiveForDate(targetDate, this.config);
 				const syncDecision = {
 					shouldProcess: !hasOctopus || !hasInexogyData || (this.enwgConfigChanged && enwgActive),
-					exportOctopus: !hasOctopus,
-					exportInexogy: !hasInexogyData,
+					exportOctopus: !octopusCached,
+					exportInexogy: !inexogyCached,
 				};
 
 				if (syncDecision.shouldProcess) {
@@ -2073,6 +2092,20 @@ class EnergyCompare extends utils.Adapter {
 									id: `${this.namespace}.inexogy.info.15MinConsumption`,
 									state: { ts: p.ts, val: p.val, ack: true, q: 0 },
 								});
+							}
+						}
+					}
+					if (multiWindowTariff) {
+						for (const [source, data] of [
+							['octopus', octopusData],
+							['inexogy', inexogyData],
+						]) {
+							if (data) {
+								await this.writeStateObject(
+									`${basePathDay}.${source}.tariffWindowVersion`,
+									'Tariff Window Calculation Version',
+									1,
+								);
 							}
 						}
 					}
