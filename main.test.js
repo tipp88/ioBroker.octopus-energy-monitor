@@ -671,7 +671,7 @@ describe('German market days across daylight saving and host timezones', () => {
 					expect(a.isEnwgActiveForDate(new Date(start.getTime() - 1), a.config)).to.equal(false);
 					let requestedDate;
 					axios.post = async (_, payload) => {
-						requestedDate = payload.variables.date;
+						requestedDate = a.getBerlinDay(new Date(payload.variables.startAt)).date;
 						return { status: 200, data: { data: { account: { property: { measurements: {
 							edges: Array.from({ length: day.count + 2 }, (_, i) => ({ node: {
 								startAt: new Date(start.getTime() + (i - 1) * 900000).toISOString(), value: '1',

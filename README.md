@@ -77,6 +77,8 @@ Existing positive days remain cached. Enable **Recalculate legacy days with hist
 
 ## Changelog
 ### WORK IN PROGRESS
+* (tipp88) Add bounded API retries, Retry-After cooldowns, expiry-aware JWT refresh and cancellable requests.
+* (tipp88) Paginate bounded, meter-scoped Octopus measurements with duplicate and cursor checks.
 * (tipp88) Resolve historical consumption prices and monthly standing charges by agreement and gross-price validity.
 * (tipp88) Preserve consumption when historical prices are missing; expose unavailable costs as null with availability indicators.
 * (tipp88) Add opt-in, versioned historical repricing within sync/retention limits without repeated interval exports.
