@@ -3,6 +3,16 @@ const utils = require('@iobroker/adapter-core');
 const axios = require('axios');
 
 const AXIOS_TIMEOUT = 30000;
+const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
+	timeZone: 'Europe/Berlin',
+	year: 'numeric',
+	month: '2-digit',
+	day: '2-digit',
+	hour: '2-digit',
+	minute: '2-digit',
+	second: '2-digit',
+	hourCycle: 'h23',
+});
 
 class EnergyCompare extends utils.Adapter {
 	constructor(options) {
@@ -765,10 +775,56 @@ class EnergyCompare extends utils.Adapter {
 		return { start, end };
 	}
 
-	getEnwgTariffForTime(date, config) {
-		const month = date.getMonth() + 1; // 1-12
-		const checkMin = date.getHours() * 60 + date.getMinutes();
+	/**
+	 * Read the German market clock without relying on the host timezone.
+	 *
+	 * @param {Date} date Instant to convert
+	 */
+	getBerlinParts(date) {
+		const parts = Object.fromEntries(BERLIN_CLOCK.formatToParts(date).map(part => [part.type, part.value]));
+		return {
+			year: Number(parts.year),
+			month: Number(parts.month),
+			day: Number(parts.day),
+			hour: Number(parts.hour),
+			minute: Number(parts.minute),
+			second: Number(parts.second),
+		};
+	}
 
+	/**
+	 * Resolve a German calendar day to an exclusive UTC range, including DST days.
+	 *
+	 * @param {Date} reference Instant within the reference day
+	 * @param {number} [offset] Calendar-day offset
+	 */
+	getBerlinDay(reference, offset = 0) {
+		const parts = this.getBerlinParts(reference);
+		const calendar = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + offset));
+		const midnight = dayOffset => {
+			const wallTime = Date.UTC(
+				calendar.getUTCFullYear(),
+				calendar.getUTCMonth(),
+				calendar.getUTCDate() + dayOffset,
+			);
+			let instant = wallTime;
+			// Berlin midnight is unambiguous, even on the clock-change dates.
+			for (let i = 0; i < 3; i++) {
+				const p = this.getBerlinParts(new Date(instant));
+				const observed = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+				instant += wallTime - observed;
+			}
+			return new Date(instant);
+		};
+		return { start: midnight(0), end: midnight(1), date: calendar.toISOString().slice(0, 10) };
+	}
+
+	getEnwgTariffForTime(date, config) {
+		const { month, hour, minute } = this.getBerlinParts(date);
+		return this.getEnwgTariffForClock(month, hour * 60 + minute, config);
+	}
+
+	getEnwgTariffForClock(month, checkMin, config) {
 		const windows = config.enwgTimeWindows || [];
 		for (const win of windows) {
 			// Parse months
@@ -828,11 +884,8 @@ class EnergyCompare extends utils.Adapter {
 		for (let i = 0; i <= 96; i++) {
 			let W = null;
 			if (i < 96) {
-				// Get tariff for this 15-min slot
-				const checkDate = new Date(date);
-				const mins = i * 15;
-				checkDate.setHours(Math.floor(mins / 60), mins % 60, 0, 0);
-				W = this.getEnwgTariffForTime(checkDate, config);
+				// This is a wall-clock schedule, not a list of elapsed-time intervals.
+				W = this.getEnwgTariffForClock(this.getBerlinParts(date).month, i * 15, config);
 			}
 
 			if (W !== currentTariff) {
@@ -858,15 +911,7 @@ class EnergyCompare extends utils.Adapter {
 		if (parts.length !== 3) {
 			return false;
 		}
-		const startYear = parseInt(parts[0], 10);
-		const startMonth = parseInt(parts[1], 10) - 1;
-		const startDay = parseInt(parts[2], 10);
-		const startDate = new Date(startYear, startMonth, startDay, 0, 0, 0, 0);
-
-		const checkDate = new Date(date);
-		checkDate.setHours(0, 0, 0, 0);
-
-		return checkDate >= startDate;
+		return this.getBerlinDay(date).date >= config.enwgStartDate;
 	}
 
 	parseConfigNumber(val) {
@@ -925,7 +970,7 @@ class EnergyCompare extends utils.Adapter {
 		});
 	}
 
-	async fetchOctopus(start, _end) {
+	async fetchOctopus(start, end) {
 		try {
 			if (!this.masterData) {
 				return null;
@@ -937,7 +982,7 @@ class EnergyCompare extends utils.Adapter {
 			const fetchRaw = isSplit || this.config.enableHistorySync;
 
 			const apiDomain = 'https://api.oeg-kraken.energy/v1/graphql/';
-			const dateString = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+			const dateString = this.getBerlinDay(start).date;
 
 			const usagePayload = {
 				query: `query getSmartMeterUsage($accountNumber: String!, $propertyId: ID!, $date: Date!) {
@@ -1015,7 +1060,7 @@ class EnergyCompare extends utils.Adapter {
 			}
 
 			const startMs = start.getTime();
-			const endMs = start.getTime() + 24 * 60 * 60 * 1000;
+			const endMs = end.getTime();
 
 			let result = { total: 0, slots: {}, rawIntervals: /** @type {Array<{ts: number, val: number}>} */ ([]) };
 			for (const r of this.masterData.rates) {
@@ -1046,7 +1091,8 @@ class EnergyCompare extends utils.Adapter {
 				result.total += nodeVal;
 
 				if (isSplit) {
-					const nodeHour = startDt.getHours() + startDt.getMinutes() / 60;
+					const clock = this.getBerlinParts(startDt);
+					const nodeHour = clock.hour + clock.minute / 60;
 					let slotted = false;
 					let matchedRate = null;
 					for (const rate of this.masterData.rates) {
@@ -1188,6 +1234,10 @@ class EnergyCompare extends utils.Adapter {
 			for (let i = 1; i < readings.length; i++) {
 				const prev = readings[i - 1];
 				const curr = readings[i];
+				// Cumulative readings bracket an interval: its end may equal midnight.
+				if (prev.time < start.getTime() || curr.time > end.getTime() || curr.time <= prev.time) {
+					continue;
+				}
 				if (!curr.values || !curr.values.energy || !prev.values || !prev.values.energy) {
 					continue;
 				}
@@ -1230,28 +1280,13 @@ class EnergyCompare extends utils.Adapter {
 			// We iterate through the raw intervals and bin them based on their timestamp
 			for (const interval of result.rawIntervals) {
 				const slotDt = new Date(interval.ts - 1000); // use a time slightly before the end of the slot to correctly bucket it
-				const nodeHour = slotDt.getHours() + slotDt.getMinutes() / 60;
+				const clock = this.getBerlinParts(slotDt);
+				const nodeHour = clock.hour + clock.minute / 60;
 
 				// Distribute into EnWG slots
-				if (enwgActive) {
-					const segments = this.getTariffSegmentsForDay(start, this.config);
-					for (const [tariffName, tariffSegs] of Object.entries(segments)) {
-						let matched = false;
-						for (const seg of tariffSegs) {
-							const fromH = seg.fromMin / 60;
-							const toH = seg.toMin / 60;
-							if (nodeHour >= fromH && nodeHour < toH) {
-								if (result.enwgSlots) {
-									result.enwgSlots[tariffName].consumption += interval.val;
-								}
-								matched = true;
-								break;
-							}
-						}
-						if (matched) {
-							break;
-						}
-					}
+				if (enwgActive && result.enwgSlots) {
+					const tariffName = this.getEnwgTariffForTime(slotDt, this.config);
+					result.enwgSlots[tariffName].consumption += interval.val;
 				}
 
 				// Use the same activation windows as the Octopus calculation.
@@ -1755,16 +1790,10 @@ class EnergyCompare extends utils.Adapter {
 
 		try {
 			// Fetch recent days first so the active billing period is available even if the API limits a startup burst.
+			const syncDate = new Date();
 			for (let i = 1; i <= syncDays; i++) {
-				const targetDate = new Date();
-				targetDate.setDate(targetDate.getDate() - i);
-				targetDate.setHours(0, 0, 0, 0);
-				const endDate = new Date(targetDate);
-				endDate.setDate(endDate.getDate() + 1);
-
-				const yearStr = `${targetDate.getFullYear()}`;
-				const monthStr = String(targetDate.getMonth() + 1).padStart(2, '0');
-				const dayStr = String(targetDate.getDate()).padStart(2, '0');
+				const { start: targetDate, end: endDate, date } = this.getBerlinDay(syncDate, -i);
+				const [yearStr, monthStr, dayStr] = date.split('-');
 
 				const basePathYear = `history.${yearStr}`;
 				const basePathMonth = `${basePathYear}.${monthStr}`;

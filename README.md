@@ -69,6 +69,8 @@ Once configured, the adapter handles the rest! It periodically syncs the last 30
 
 ## Changelog
 ### WORK IN PROGRESS
+* (tipp88) Use Europe/Berlin calendar-day boundaries and tariff times, including 23/25-hour daylight-saving days.
+* (tipp88) Exclude out-of-day intervals while retaining the final Inexogy interval ending at midnight.
 * (tipp88) Updated axios from 1.20.0 to 1.21.0.
 * (tipp88) Updated development dependencies: @iobroker/testing 6.1.0 → 6.3.1, @iobroker/types 7.2.2 → 7.2.5, and @types/node 22.20.1 → 22.20.5.
 * (tipp88) Handle all Octopus tariff windows for consumption and cost calculations, including Inexogy comparisons.
