@@ -467,6 +467,79 @@ describe('Independent provider operation', () => {
 	});
 });
 
+describe('German market days across daylight saving and host timezones', () => {
+	const cases = [
+		{ date: '2026-02-15', start: '2026-02-14T23:00:00Z', end: '2026-02-15T23:00:00Z', count: 96, go: 20 },
+		{ date: '2026-03-29', start: '2026-03-28T23:00:00Z', end: '2026-03-29T22:00:00Z', count: 92, go: 16 },
+		{ date: '2026-10-25', start: '2026-10-24T22:00:00Z', end: '2026-10-25T23:00:00Z', count: 100, go: 24 },
+	];
+	for (const timezone of ['Europe/Berlin', 'UTC', 'America/Los_Angeles']) {
+		for (const day of cases) {
+			it(`keeps ${day.count} quarters and correct tariffs on ${day.date} with host ${timezone}`, async () => {
+				const originalTimezone = process.env.TZ;
+				const originalPost = axios.post;
+				process.env.TZ = timezone;
+				try {
+					const a = factory({});
+					a.config = {
+						enwgStartDate: day.date,
+						enwgTimeWindows: [{ months: '*', startTime: '00:00', endTime: '05:00', tariff: 'NT' }],
+					};
+					a.enwgEnabled = true;
+					a.masterData = { isTimeOfUse: true, rates: [
+						{ name: 'GO', rateEuros: 0.2, from: '00:00', to: '05:00' },
+						{ name: 'STANDARD', rateEuros: 0.3, from: '05:00', to: '00:00' },
+					] };
+					const { start, end, date } = a.getBerlinDay(new Date(day.date + 'T12:00:00Z'));
+					expect(start.getTime()).to.equal(Date.parse(day.start));
+					expect(end.getTime()).to.equal(Date.parse(day.end));
+					expect(date).to.equal(day.date);
+					expect(a.getBerlinDay(end, -1).date).to.equal(day.date);
+					expect(a.isEnwgActiveForDate(start, a.config)).to.equal(true);
+					expect(a.isEnwgActiveForDate(new Date(start.getTime() - 1), a.config)).to.equal(false);
+					let requestedDate;
+					axios.post = async (_, payload) => {
+						requestedDate = payload.variables.date;
+						return { status: 200, data: { data: { account: { property: { measurements: {
+							edges: Array.from({ length: day.count + 2 }, (_, i) => ({ node: {
+								startAt: new Date(start.getTime() + (i - 1) * 900000).toISOString(), value: '1',
+							} })),
+						} } } } } };
+					};
+					const octopus = await a.fetchOctopus(start, end);
+					expect(requestedDate).to.equal(day.date);
+					expect(octopus.total).to.equal(day.count);
+					expect(octopus.rawIntervals).to.have.length(day.count);
+					expect(new Set(octopus.rawIntervals.map(row => row.ts)).size).to.equal(day.count);
+					expect(octopus.slots.GO.consumption).to.equal(day.go);
+					expect(octopus.slots.STANDARD.consumption).to.equal(day.count - day.go);
+					expect(octopus.enwgSlots.NT.consumption).to.equal(day.go);
+					expect(octopus.totalCost).to.be.closeTo(day.go * 0.2 + (day.count - day.go) * 0.3, 1e-8);
+					a.inexogyMeterId = 'test';
+					a.fetchInexogyReadings = async (_, __, from, to) => {
+						expect(from.getTime()).to.equal(start.getTime());
+						expect(to.getTime()).to.equal(end.getTime());
+						return Array.from({ length: day.count + 3 }, (_, i) => ({
+							time: start.getTime() + (i - 1) * 900000, values: { energy: (i + 1) * 10000000000 },
+						}));
+					};
+					const inexogy = await a.fetchInexogy(start, end);
+					expect(inexogy.total).to.equal(day.count);
+					expect(inexogy.rawIntervals).to.have.length(day.count);
+					expect(inexogy.rawIntervals.at(-1).ts).to.equal(end.getTime());
+					expect(inexogy.slots.GO.consumption).to.equal(day.go);
+					expect(inexogy.enwgSlots.NT.consumption).to.equal(day.go);
+					expect(inexogy.enwgSlots.ST.consumption).to.equal(day.count - day.go);
+				} finally {
+					axios.post = originalPost;
+					if (originalTimezone === undefined) delete process.env.TZ;
+					else process.env.TZ = originalTimezone;
+				}
+			});
+		}
+	}
+});
+
 describe('Octopus Heat activation windows', () => {
 	const rates = [
 		{ name: 'NIEDRIG', rateEuros: 0.1883, windows: [{ from: '02:00', to: '06:00' }, { from: '12:00', to: '16:00' }] },
