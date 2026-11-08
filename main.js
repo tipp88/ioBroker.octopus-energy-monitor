@@ -3,6 +3,7 @@ const utils = require('@iobroker/adapter-core');
 const axios = require('axios');
 const { agreementAt, grossPrice, tariffRates } = require('./lib/historical-prices');
 const apiPolicy = require('./lib/api-policy');
+const { intervalQuality } = require('./lib/data-quality');
 
 const AXIOS_TIMEOUT = 30000;
 const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
@@ -37,8 +38,22 @@ class EnergyCompare extends utils.Adapter {
 		/** @type {Promise<void>|null} */
 		this.activeSync = null;
 		this.apiCooldowns = new Map();
+		this.apiStatus = {
+			octopus: { lastSuccess: 0, lastError: '' },
+			inexogy: { lastSuccess: 0, lastError: '' },
+		};
+		this.pageDuplicates = 0;
 		this.http = {
-			get: (url, options) => axios.get(url, { ...options, signal: this.requestController.signal }),
+			get: async (url, options) => {
+				try {
+					const response = await axios.get(url, { ...options, signal: this.requestController.signal });
+					this.recordApiStatus('inexogy', response);
+					return response;
+				} catch (error) {
+					this.apiStatus.inexogy.lastError = 'NETWORK_ERROR';
+					throw error;
+				}
+			},
 			post: (url, payload, options) =>
 				axios.post(url, payload, { ...options, signal: this.requestController.signal }),
 		};
@@ -450,6 +465,79 @@ class EnergyCompare extends utils.Adapter {
 		await apiPolicy.delay(ms, this.requestController.signal);
 	}
 
+	recordApiStatus(source, response) {
+		const codes = apiPolicy
+			.errorCodes(response)
+			.filter(code => typeof code === 'string' && /^[A-Z0-9_-]+$/.test(code));
+		const hasErrors = Array.isArray(response.data?.errors) && response.data.errors.length > 0;
+		const status = this.apiStatus[source];
+		status.lastError =
+			response.status >= 200 && response.status < 300 && !hasErrors
+				? ''
+				: codes.length
+					? codes.join(', ')
+					: `HTTP_${response.status}${hasErrors ? '_GRAPHQL_ERROR' : ''}`;
+		if (!status.lastError) {
+			status.lastSuccess = Date.now();
+		}
+	}
+
+	async writeDiagnostics(running) {
+		if (this.stopping) {
+			return;
+		}
+		await this.writeStateObject('info.sync.running', 'Synchronization Running', running, 'indicator', 'boolean');
+		await this.writeStateObject(
+			'info.sync.nextRun',
+			'Next Scheduled Synchronization',
+			running ? 0 : Date.now() + Math.max(15, Number(this.config.updateInterval) || 60) * 60000,
+			'value.time',
+		);
+		for (const source of ['octopus', 'inexogy']) {
+			if (source === 'octopus' ? !this.hasOctopus : !this.hasInexogy) {
+				continue;
+			}
+			const status = this.apiStatus[source];
+			const base = `info.api.${source}`;
+			if (status.lastSuccess) {
+				await this.writeStateObject(
+					`${base}.lastSuccess`,
+					'Last Successful API Response',
+					status.lastSuccess,
+					'value.time',
+				);
+			}
+			await this.writeStateObject(`${base}.lastError`, 'Last API Error Code', status.lastError, 'text', 'string');
+			const retryAt =
+				source === 'octopus' ? this.apiCooldowns.get('https://api.oeg-kraken.energy/v1/graphql/') || 0 : 0;
+			await this.writeStateObject(
+				`${base}.retryAt`,
+				'API Retry Not Before',
+				retryAt > Date.now() ? retryAt : 0,
+				'value.time',
+			);
+			await this.writeStateObject(
+				`${base}.rateLimited`,
+				'API Rate Limited',
+				retryAt > Date.now(),
+				'indicator',
+				'boolean',
+			);
+		}
+	}
+
+	async writeDayQuality(base, quality) {
+		for (const [key, value] of Object.entries(quality)) {
+			await this.writeStateObject(
+				`${base}.quality.${key}`,
+				`Interval Quality ${key}`,
+				value,
+				typeof value === 'boolean' ? 'indicator' : 'value',
+				typeof value === 'boolean' ? 'boolean' : 'number',
+			);
+		}
+	}
+
 	async ensureOctopusToken(force = false) {
 		if (this.stopping) {
 			throw new Error('Adapter stopping');
@@ -518,6 +606,7 @@ class EnergyCompare extends utils.Adapter {
 					timeout: AXIOS_TIMEOUT,
 				});
 			} catch (error) {
+				this.apiStatus.octopus.lastError = 'NETWORK_ERROR';
 				if (this.stopping || !readOnly || attempt >= 2) {
 					throw error;
 				}
@@ -545,6 +634,9 @@ class EnergyCompare extends utils.Adapter {
 				if (endpoint.includes('oeg-kraken')) {
 					this.octopusRateLimited = true;
 				}
+			}
+			if (endpoint.includes('oeg-kraken')) {
+				this.recordApiStatus('octopus', response);
 			}
 			return response;
 		}
@@ -1241,6 +1333,7 @@ class EnergyCompare extends utils.Adapter {
 	}
 
 	async fetchMeasurementPages(payload) {
+		this.pageDuplicates = 0;
 		const edges = new Map();
 		const cursors = new Set();
 		for (let page = 0; page < 100; page++) {
@@ -1257,6 +1350,9 @@ class EnergyCompare extends utils.Adapter {
 				const node = edge.node;
 				const key = node.startAt;
 				const previous = edges.get(key);
+				if (previous) {
+					this.pageDuplicates++;
+				}
 				if (
 					previous &&
 					(Number(previous.node.value) !== Number(node.value) || previous.node.endAt !== node.endAt)
@@ -1376,8 +1472,23 @@ class EnergyCompare extends utils.Adapter {
 				this.log.debug(`Octopus usage API returned no measurements for ${dateString}.`);
 				return null;
 			}
+			const quality = fetchRaw
+				? intervalQuality(
+						edges.map(edge => ({
+							ts: Date.parse(edge.node.startAt),
+							val: Number(edge.node.value),
+							...(edge.node.endAt ? { end: Date.parse(edge.node.endAt) } : {}),
+						})),
+						start,
+						end,
+					)
+				: null;
+			if (quality) {
+				quality.duplicates += this.pageDuplicates;
+			}
 			if (this.masterData.agreements) {
-				return this.calculateHistoricalUsage(edges, start, end);
+				const result = this.calculateHistoricalUsage(edges, start, end);
+				return result ? { ...result, quality } : null;
 			}
 
 			const startMs = start.getTime();
@@ -1487,6 +1598,7 @@ class EnergyCompare extends utils.Adapter {
 				totalCost += result.slots[key].cost;
 			}
 			result.totalCost = totalCost;
+			result.quality = quality;
 
 			return result;
 		} catch (error) {
@@ -1549,6 +1661,7 @@ class EnergyCompare extends utils.Adapter {
 			const fetchRaw = isSplit || this.config.enableHistorySync;
 			/** @type {{ total: number, slots: Object<string, any>, enwgSlots?: Object<string, any>, rawIntervals: Array<{ts: number, val: number}> }} */
 			let result = { total: 0, slots: {}, rawIntervals: [] };
+			const diagnosticIntervals = [];
 
 			// Calculate consumption per 15-min interval
 			// Readings provide the absolute 'energy' counter at the end of each slot.
@@ -1571,6 +1684,7 @@ class EnergyCompare extends utils.Adapter {
 				}
 				const consumption = parseFloat(kwh.toFixed(3));
 				const ts = curr.time; // timestamp of the reading (end of the 15m slot)
+				diagnosticIntervals.push({ ts: prev.time, end: curr.time, val: consumption });
 
 				if (fetchRaw) {
 					result.rawIntervals.push({ ts, val: consumption });
@@ -1591,11 +1705,12 @@ class EnergyCompare extends utils.Adapter {
 				};
 			}
 
+			const quality = intervalQuality(diagnosticIntervals, start, end);
 			if (!isSplit) {
 				if (rates.length) {
 					result.slots[rates[0].name].consumption = result.total;
 				}
-				return result;
+				return { ...result, quality };
 			}
 
 			// We now need to distribute the rawIntervals into the time slots
@@ -1628,7 +1743,7 @@ class EnergyCompare extends utils.Adapter {
 				}
 			}
 
-			return result;
+			return { ...result, quality };
 		} catch (error) {
 			this.log.error(`Inexogy fetch error: ${error.message}`);
 			return null;
@@ -2058,7 +2173,16 @@ class EnergyCompare extends utils.Adapter {
 		if (this.stopping || this.activeSync) {
 			return;
 		}
-		this.activeSync = this.performSync();
+		this.activeSync = (async () => {
+			await this.writeDiagnostics(true);
+			try {
+				await this.performSync();
+			} finally {
+				if (!this.stopping) {
+					await this.writeDiagnostics(false);
+				}
+			}
+		})();
 		try {
 			await this.activeSync;
 		} finally {
@@ -2197,6 +2321,13 @@ class EnergyCompare extends utils.Adapter {
 				};
 
 				if (syncDecision.shouldProcess) {
+					await this.writeStateObject(
+						'info.sync.currentDay',
+						'Current Synchronization Day',
+						date,
+						'text',
+						'string',
+					);
 					this.log.debug(`Syncing data for ${yearStr}-${monthStr}-${dayStr}...`);
 
 					// Create hierarchical folders
@@ -2257,6 +2388,9 @@ class EnergyCompare extends utils.Adapter {
 					}
 
 					if (octopusData) {
+						if ('quality' in octopusData && octopusData.quality) {
+							await this.writeDayQuality(`${basePathDay}.octopus`, octopusData.quality);
+						}
 						if ('pricingVersion' in octopusData) {
 							await this.writeStateObject(
 								`${basePathDay}.octopus.costAvailable`,
@@ -2518,6 +2652,9 @@ class EnergyCompare extends utils.Adapter {
 								? octopusData.pricingVersion
 								: 0,
 						);
+					}
+					if (inexogyData && 'quality' in inexogyData && inexogyData.quality) {
+						await this.writeDayQuality(`${basePathDay}.inexogy`, inexogyData.quality);
 					}
 					if (multiWindowTariff) {
 						for (const [source, data] of [
