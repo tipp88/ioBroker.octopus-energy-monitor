@@ -1,6 +1,7 @@
 'use strict';
 const utils = require('@iobroker/adapter-core');
 const axios = require('axios');
+const { agreementAt, grossPrice, tariffRates } = require('./lib/historical-prices');
 
 const AXIOS_TIMEOUT = 30000;
 const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
@@ -354,6 +355,9 @@ class EnergyCompare extends utils.Adapter {
 	 * @param {string} [unit] State Unit
 	 */
 	async writeStateObject(id, name, value, role = 'value', type = 'number', unit = '') {
+		if (type === 'number' && typeof value === 'number' && !Number.isFinite(value)) {
+			value = null;
+		}
 		if (!unit) {
 			if (role.includes('power') || name.includes('Consumption') || name.includes('Difference')) {
 				unit = 'kWh';
@@ -371,6 +375,15 @@ class EnergyCompare extends utils.Adapter {
 			this.syncObjectCache.set(fullId, { type: 'state' });
 		}
 		await this.setStateAsync(id, { val: value, ack: true });
+		if (id.endsWith('.totalCost') || id.endsWith('.totalCostWithStandingCharge')) {
+			await this.writeStateObject(
+				`${id}Available`,
+				'Cost Available',
+				typeof value === 'number' && Number.isFinite(value),
+				'indicator',
+				'boolean',
+			);
+		}
 	}
 
 	async writeMasterDataStates(data) {
@@ -444,15 +457,22 @@ class EnergyCompare extends utils.Adapter {
 								agreements {
 									id
 									isActive
-									product { displayName isTimeOfUse fullName }
+									isRevoked
+									validFrom
+									validTo
+									standingChargeGrossRateInformation { date grossRate rateValidToDate vatRate }
+									product { code displayName isTimeOfUse fullName }
+									unitRateForecast { validFrom validTo }
 									unitRateInformation {
 										... on SimpleProductUnitRateInformation {
 											__typename latestGrossUnitRateCentsPerKwh
+											grossRateInformation { date grossRate rateValidToDate vatRate }
 										}
 										... on TimeOfUseProductUnitRateInformation {
 											__typename
 											rates {
 												latestGrossUnitRateCentsPerKwh
+												grossRateInformation { date grossRate rateValidToDate vatRate }
 												timeslotName
 												timeslotActivationRules { activeFromTime activeToTime }
 											}
@@ -490,6 +510,12 @@ class EnergyCompare extends utils.Adapter {
 			}
 
 			const account = dataRes.data.data.account;
+			const historicalDataIncomplete = Array.isArray(dataRes.data.errors) && dataRes.data.errors.length > 0;
+			if (historicalDataIncomplete) {
+				this.log.warn(
+					'Octopus master data contains GraphQL errors; historical pricing is unavailable for this synchronization.',
+				);
+			}
 			const properties = account.properties || [];
 			if (properties.length === 0) {
 				throw new Error('No properties found');
@@ -586,6 +612,7 @@ class EnergyCompare extends utils.Adapter {
 				dnoName: malo.dno?.name || 'Unknown',
 				rates: rates,
 				monthlyStandingCharge: standingChargeEuros,
+				agreements: historicalDataIncomplete ? [] : malo.agreements || [],
 			};
 
 			if (this.config.splitGoTariff && masterData.rates.length === 1) {
@@ -970,6 +997,158 @@ class EnergyCompare extends utils.Adapter {
 		});
 	}
 
+	getKnownTariffRates() {
+		const rates = [...(this.masterData?.rates || [])];
+		for (const agreement of this.masterData?.agreements || []) {
+			rates.push(...tariffRates(agreement, this.config.splitGoTariff));
+		}
+		return [...new Map(rates.map(rate => [rate.name, rate])).values()];
+	}
+
+	getHistoricalAgreements() {
+		return this.masterData?.agreements || [];
+	}
+
+	hasHistoricalDayPrices(start, end) {
+		if (!this.getHistoricalAgreements().length) {
+			return false;
+		}
+		const edges = [];
+		for (let ts = start.getTime(); ts < end.getTime(); ts += 900000) {
+			edges.push({
+				node: { startAt: new Date(ts).toISOString(), endAt: new Date(ts + 900000).toISOString(), value: '0' },
+			});
+		}
+		const result = this.calculateHistoricalUsage(edges, start, end);
+		return !!result?.costAvailable && Number.isFinite(result.standingCharge);
+	}
+
+	getHistoricalTariffRates(at) {
+		if (!this.masterData?.agreements) {
+			return this.masterData?.rates || [];
+		}
+		return tariffRates(agreementAt(this.masterData.agreements, at), this.config.splitGoTariff);
+	}
+
+	/**
+	 * Prorate historical monthly gross charges by calendar day and contract coverage.
+	 *
+	 * @param {Date} start Inclusive Berlin midnight
+	 * @param {Date} end Exclusive Berlin midnight
+	 */
+	getHistoricalStandingCharge(start, end) {
+		const agreements = this.masterData?.agreements || [];
+		let charge = 0;
+		for (let at = start; at < end; ) {
+			const day = this.getBerlinDay(at);
+			const stop = Math.min(day.end.getTime(), end.getTime());
+			const points = new Set([at.getTime(), stop]);
+			for (const agreement of agreements) {
+				for (const boundary of [agreement.validFrom, agreement.validTo]) {
+					const ts = Date.parse(boundary);
+					if (ts > at.getTime() && ts < stop) {
+						points.add(ts);
+					}
+				}
+			}
+			const ordered = [...points].sort((a, b) => a - b);
+			const { year, month } = this.getBerlinParts(at);
+			const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+			for (let i = 0; i < ordered.length - 1; i++) {
+				const agreement = agreementAt(agreements, new Date(ordered[i]));
+				const price = grossPrice(agreement?.standingChargeGrossRateInformation, day.date, 1);
+				if (!price) {
+					return NaN;
+				}
+				charge +=
+					((price.euros / daysInMonth) * (ordered[i + 1] - ordered[i])) /
+					(day.end.getTime() - day.start.getTime());
+			}
+			at = day.end;
+		}
+		return charge;
+	}
+
+	calculateHistoricalUsage(edges, start, end) {
+		const enwgActive = this.isEnwgActiveForDate(start, this.config);
+		const fees = enwgActive ? this.getEnwgGridFees(this.config) : null;
+		const result = {
+			total: 0,
+			totalCost: 0,
+			slots: {},
+			rawIntervals: /** @type {Array<{ts: number, val: number}>} */ ([]),
+			costAvailable: true,
+			costStatus: 'complete',
+			pricingVersion: 1,
+			standingCharge: this.getHistoricalStandingCharge(start, end),
+			enwgSlots: enwgActive
+				? Object.fromEntries(
+						['NT', 'ST', 'HT'].map(name => [name, { consumption: 0, costGross: 0, costNet: 0 }]),
+					)
+				: null,
+		};
+		// Clear slots left over from an older calculation or a different agreement.
+		for (const rate of [...this.getKnownTariffRates(), { name: 'UNPRICED' }]) {
+			result.slots[rate.name] = { consumption: 0, cost: 0, rateEuros: NaN };
+		}
+		for (const edge of edges) {
+			const at = new Date(edge.node.startAt);
+			if (at < start || at >= end) {
+				continue;
+			}
+			const value = Number(edge.node.value);
+			if (edge.node.value == null || !Number.isFinite(value) || value < 0) {
+				this.log.error(`Invalid Octopus consumption at ${edge.node.startAt}; day skipped.`);
+				return null;
+			}
+			result.total += value;
+			result.rawIntervals.push({ ts: at.getTime(), val: value });
+			const agreement = agreementAt(this.getHistoricalAgreements(), at);
+			const clock = this.getBerlinParts(at);
+			const matches = this.getHistoricalTariffRates(at).filter(rate =>
+				this.rateMatchesHour(rate, clock.hour + clock.minute / 60),
+			);
+			const rate = matches.length === 1 ? matches[0] : null;
+			let price = grossPrice(rate?.prices, this.getBerlinDay(at).date, 100);
+			const until = new Date(edge.node.endAt || at.getTime() + 900000);
+			const lastInstant = new Date(until.getTime() - 1);
+			// Do not price an interval spanning different contracts or price periods as one rate.
+			if (
+				until > end ||
+				!Number.isFinite(until.getTime()) ||
+				until <= at ||
+				agreementAt(this.getHistoricalAgreements(), lastInstant) !== agreement ||
+				grossPrice(rate?.prices, this.getBerlinDay(lastInstant).date, 100)?.euros !== price?.euros
+			) {
+				price = null;
+			}
+			const name = rate?.name || 'UNPRICED';
+			result.slots[name] ||= { consumption: 0, cost: 0, rateEuros: price?.euros ?? NaN };
+			const slot = result.slots[name];
+			slot.consumption += value;
+			let unitPrice = price?.euros ?? NaN;
+			if (enwgActive && fees && result.enwgSlots) {
+				const tariff = this.getEnwgTariffForTime(at, this.config);
+				const enwgSlot = result.enwgSlots[tariff];
+				enwgSlot.consumption += value;
+				unitPrice = unitPrice - fees.ST.gross + fees[tariff].gross;
+				const netPrice =
+					price && Number.isFinite(price.vat) && price.vat >= 0
+						? price.euros / (1 + price.vat) - fees.ST.net + fees[tariff].net
+						: NaN;
+				enwgSlot.costGross += value * unitPrice;
+				enwgSlot.costNet += value * netPrice;
+			}
+			slot.cost += value * unitPrice;
+			result.totalCost += value * unitPrice;
+			if (!price) {
+				result.costAvailable = false;
+				result.costStatus = 'missing_historical_price';
+			}
+		}
+		return result;
+	}
+
 	async fetchOctopus(start, end) {
 		try {
 			if (!this.masterData) {
@@ -979,7 +1158,7 @@ class EnergyCompare extends utils.Adapter {
 			const fees = enwgActive ? this.getEnwgGridFees(this.config) : null;
 			const isSplit = (this.masterData.isTimeOfUse && this.masterData.rates.length > 1) || enwgActive;
 
-			const fetchRaw = isSplit || this.config.enableHistorySync;
+			const fetchRaw = !!this.masterData.agreements || isSplit || this.config.enableHistorySync;
 
 			const apiDomain = 'https://api.oeg-kraken.energy/v1/graphql/';
 			const dateString = this.getBerlinDay(start).date;
@@ -1057,6 +1236,9 @@ class EnergyCompare extends utils.Adapter {
 			if (!edges || edges.length === 0) {
 				this.log.debug(`Octopus usage API returned no measurements for ${dateString}.`);
 				return null;
+			}
+			if (this.masterData.agreements) {
+				return this.calculateHistoricalUsage(edges, start, end);
 			}
 
 			const startMs = start.getTime();
@@ -1198,8 +1380,9 @@ class EnergyCompare extends utils.Adapter {
 	async fetchInexogy(start, end) {
 		try {
 			const enwgActive = this.isEnwgActiveForDate(start, this.config);
-			const rates = this.masterData?.rates || [];
-			const isSplit = (this.masterData?.isTimeOfUse && rates.length > 1) || enwgActive;
+			const rates = this.getKnownTariffRates();
+			const isSplit =
+				!!this.masterData?.agreements || (this.masterData?.isTimeOfUse && rates.length > 1) || enwgActive;
 			const basicAuth = Buffer.from(`${this.config.inexogyEmail}:${this.config.inexogyPassword}`).toString(
 				'base64',
 			);
@@ -1290,9 +1473,14 @@ class EnergyCompare extends utils.Adapter {
 				}
 
 				// Use the same activation windows as the Octopus calculation.
-				const rate = rates.find(candidate => this.rateMatchesHour(candidate, nodeHour));
+				const rate = this.getHistoricalTariffRates(slotDt).find(candidate =>
+					this.rateMatchesHour(candidate, nodeHour),
+				);
 				if (rate) {
 					result.slots[rate.name].consumption += interval.val;
+				} else if (this.masterData?.agreements) {
+					result.slots.UNPRICED ||= { consumption: 0, cost: 0, rateEuros: NaN };
+					result.slots.UNPRICED.consumption += interval.val;
 				} else if (rates.length) {
 					this.log.error(
 						`No Octopus tariff window matches Inexogy interval ${slotDt.toISOString()}. Skipping day to avoid incorrect tariff totals.`,
@@ -1658,15 +1846,19 @@ class EnergyCompare extends utils.Adapter {
 			enwgSlots: null,
 		};
 		if (source === 'octopus') {
-			result.totalCost = Number((await this.getStateAsync(`${basePathDay}.octopus.totalCost`))?.val) || 0;
+			const storedCost = await this.getStateAsync(`${basePathDay}.octopus.totalCost`);
+			result.totalCost = storedCost?.val === null ? NaN : Number(storedCost?.val) || 0;
 		}
 
-		for (const rate of this.masterData?.rates || []) {
+		for (const rate of [...this.getKnownTariffRates(), { name: 'UNPRICED', rateEuros: NaN }]) {
 			const safeName = this.sanitizeIdSegment(rate.name).toLowerCase();
 			result.slots[rate.name] = {
 				consumption:
 					Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Consumption`))?.val) || 0,
-				cost: Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Cost`))?.val) || 0,
+				cost:
+					(await this.getStateAsync(`${basePathDay}.${source}.${safeName}Cost`))?.val === null
+						? NaN
+						: Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Cost`))?.val) || 0,
 				rateEuros: rate.rateEuros,
 			};
 		}
@@ -1678,9 +1870,15 @@ class EnergyCompare extends utils.Adapter {
 				result.enwgSlots[slotName] = {
 					consumption:
 						Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Consumption`))?.val) || 0,
-					costGross: Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Cost`))?.val) || 0,
+					costGross:
+						(await this.getStateAsync(`${basePathDay}.${source}.${safeName}Cost`))?.val === null
+							? NaN
+							: Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}Cost`))?.val) || 0,
 					costNet:
-						Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}CostNet`))?.val) || 0,
+						(await this.getStateAsync(`${basePathDay}.${source}.${safeName}CostNet`))?.val === null
+							? NaN
+							: Number((await this.getStateAsync(`${basePathDay}.${source}.${safeName}CostNet`))?.val) ||
+								0,
 				};
 			}
 		}
@@ -1810,7 +2008,21 @@ class EnergyCompare extends utils.Adapter {
 				const needsTariffCorrection = async source =>
 					multiWindowTariff &&
 					(await this.getStateAsync(`${basePathDay}.${source}.tariffWindowVersion`))?.val !== 1;
-				const correctOctopusTariff = this.hasOctopus && (await needsTariffCorrection('octopus'));
+				let historicalPricesReady;
+				const needsHistoricalCorrection = async source => {
+					if (
+						!this.config.recalculateHistoricalPrices ||
+						!this.hasOctopus ||
+						(await this.getStateAsync(`${basePathDay}.${source}.pricingVersion`))?.val === 1
+					) {
+						return false;
+					}
+					historicalPricesReady ??= this.hasHistoricalDayPrices(targetDate, endDate);
+					return historicalPricesReady;
+				};
+				const correctOctopusTariff =
+					this.hasOctopus &&
+					((await needsTariffCorrection('octopus')) || (await needsHistoricalCorrection('octopus')));
 				const octopusCached = this.isDayCached(checkOctopus, null);
 				const hasOctopus = !this.hasOctopus || (octopusCached && !correctOctopusTariff);
 
@@ -1824,7 +2036,10 @@ class EnergyCompare extends utils.Adapter {
 						});
 					}
 					inexogyCached = this.isDayCached(checkInexogy, null);
-					hasInexogyData = inexogyCached && !(await needsTariffCorrection('inexogy'));
+					hasInexogyData =
+						inexogyCached &&
+						!(await needsTariffCorrection('inexogy')) &&
+						!(await needsHistoricalCorrection('inexogy'));
 				}
 
 				const enwgActive = this.isEnwgActiveForDate(targetDate, this.config);
@@ -1895,6 +2110,30 @@ class EnergyCompare extends utils.Adapter {
 					}
 
 					if (octopusData) {
+						if ('pricingVersion' in octopusData) {
+							await this.writeStateObject(
+								`${basePathDay}.octopus.costAvailable`,
+								'Historical Cost Available',
+								octopusData.costAvailable,
+								'indicator',
+								'boolean',
+							);
+							await this.writeStateObject(
+								`${basePathDay}.octopus.costStatus`,
+								'Historical Cost Status',
+								octopusData.costStatus,
+								'text',
+								'string',
+							);
+							await this.writeStateObject(
+								`${basePathDay}.octopus.standingCharge`,
+								'Daily Standing Charge',
+								octopusData.standingCharge,
+								'value',
+								'number',
+								'€',
+							);
+						}
 						await this.writeStateObject(
 							`${basePathDay}.octopus.dailyConsumption`,
 							'Daily Consumption',
@@ -2124,6 +2363,15 @@ class EnergyCompare extends utils.Adapter {
 							}
 						}
 					}
+					if (octopusData && 'pricingVersion' in octopusData) {
+						await this.writeStateObject(
+							`${basePathDay}.octopus.pricingVersion`,
+							'Historical Pricing Version',
+							octopusData.costAvailable && Number.isFinite(octopusData.standingCharge)
+								? octopusData.pricingVersion
+								: 0,
+						);
+					}
 					if (multiWindowTariff) {
 						for (const [source, data] of [
 							['octopus', octopusData],
@@ -2137,6 +2385,17 @@ class EnergyCompare extends utils.Adapter {
 								);
 							}
 						}
+					}
+					if (
+						inexogyData &&
+						this.getHistoricalAgreements().length &&
+						(!hasInexogyData || forceRecalculation)
+					) {
+						await this.writeStateObject(
+							`${basePathDay}.inexogy.pricingVersion`,
+							'Historical Pricing Version',
+							1,
+						);
 					}
 				}
 			}
@@ -2401,7 +2660,7 @@ class EnergyCompare extends utils.Adapter {
 					);
 
 					const cons = consState && consState.val ? Number(consState.val) : 0;
-					const cost = costState && costState.val ? Number(costState.val) : 0;
+					const cost = costState?.val === null ? NaN : Number(costState?.val) || 0;
 
 					yearMap[year].consumption += cons;
 					yearMap[year].cost += cost;
@@ -2438,7 +2697,7 @@ class EnergyCompare extends utils.Adapter {
 
 					// Dynamically query slot states
 					if (this.masterData && this.masterData.rates) {
-						for (const rate of this.masterData.rates) {
+						for (const rate of [...this.getKnownTariffRates(), { name: 'UNPRICED' }]) {
 							const slotName = this.sanitizeIdSegment(rate.name).toLowerCase();
 							const slotConsId = `${historyPrefix}${year}.${month}.${day}.octopus.${slotName}Consumption`;
 							const slotCostId = `${historyPrefix}${year}.${month}.${day}.octopus.${slotName}Cost`;
@@ -2447,7 +2706,7 @@ class EnergyCompare extends utils.Adapter {
 							const slotCostState = await this.getStateAsync(slotCostId);
 
 							const slotCons = slotConsState && slotConsState.val ? Number(slotConsState.val) : 0;
-							const slotCost = slotCostState && slotCostState.val ? Number(slotCostState.val) : 0;
+							const slotCost = slotCostState?.val === null ? NaN : Number(slotCostState?.val) || 0;
 
 							if (!periodMap[periodKey].slots[slotName]) {
 								periodMap[periodKey].slots[slotName] = { consumption: 0, cost: 0 };
@@ -2468,8 +2727,10 @@ class EnergyCompare extends utils.Adapter {
 								periodMap[periodKey].enwgSlots[slotName] = { consumption: 0, cost: 0, costNet: 0 };
 							}
 							periodMap[periodKey].enwgSlots[slotName].consumption += Number(slotConsState?.val) || 0;
-							periodMap[periodKey].enwgSlots[slotName].cost += Number(slotCostState?.val) || 0;
-							periodMap[periodKey].enwgSlots[slotName].costNet += Number(slotCostNetState?.val) || 0;
+							periodMap[periodKey].enwgSlots[slotName].cost +=
+								slotCostState?.val === null ? NaN : Number(slotCostState?.val) || 0;
+							periodMap[periodKey].enwgSlots[slotName].costNet +=
+								slotCostNetState?.val === null ? NaN : Number(slotCostNetState?.val) || 0;
 						}
 					}
 				}
@@ -2555,7 +2816,11 @@ class EnergyCompare extends utils.Adapter {
 
 		const daysInCurrentMonth = new Date(yesterday.getFullYear(), yesterday.getMonth() + 1, 0).getDate();
 		const elapsedDaysInMonth = yesterday.getDate();
-		const proportionalMonthCharge = standingChargeEuros * (elapsedDaysInMonth / daysInCurrentMonth);
+		const germanToday = this.getBerlinDay(today);
+		const monthStart = this.getBerlinDay(new Date(`${germanToday.date.slice(0, 7)}-01T12:00:00Z`)).start;
+		const proportionalMonthCharge = this.masterData?.agreements
+			? this.getHistoricalStandingCharge(monthStart, germanToday.start)
+			: standingChargeEuros * (elapsedDaysInMonth / daysInCurrentMonth);
 		const currentMonthCostWithStandingCharge = currentMonthTotals.cost + proportionalMonthCharge;
 
 		await this.writeStateObject(
@@ -2576,6 +2841,8 @@ class EnergyCompare extends utils.Adapter {
 		activePeriodIds.add(`${this.namespace}.octopus.periods.current.totalConsumption`);
 		activePeriodIds.add(`${this.namespace}.octopus.periods.current.totalCost`);
 		activePeriodIds.add(`${this.namespace}.octopus.periods.current.totalCostWithStandingCharge`);
+		activePeriodIds.add(`${this.namespace}.octopus.periods.current.totalCostAvailable`);
+		activePeriodIds.add(`${this.namespace}.octopus.periods.current.totalCostWithStandingChargeAvailable`);
 
 		// Write all dynamic period states
 		for (const [key, pData] of Object.entries(periodMap)) {
@@ -2586,6 +2853,8 @@ class EnergyCompare extends utils.Adapter {
 			activePeriodIds.add(`${this.namespace}.${basePath}.totalConsumption`);
 			activePeriodIds.add(`${this.namespace}.${basePath}.totalCost`);
 			activePeriodIds.add(`${this.namespace}.${basePath}.totalCostWithStandingCharge`);
+			activePeriodIds.add(`${this.namespace}.${basePath}.totalCostAvailable`);
+			activePeriodIds.add(`${this.namespace}.${basePath}.totalCostWithStandingChargeAvailable`);
 
 			await this.setObjectNotExistsAsync(basePath, {
 				type: 'channel',
@@ -2624,7 +2893,11 @@ class EnergyCompare extends utils.Adapter {
 			const checkEnd = pData.end < yesterday ? new Date(pData.end) : new Date(yesterday);
 			const totalDays = Math.round((pData.end.getTime() - pData.start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
 			const elapsedDays = Math.round((checkEnd.getTime() - pData.start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-			const proportionalCharge = standingChargeEuros * (elapsedDays / totalDays);
+			const chargeStart = this.getBerlinDay(new Date(`${formatDateStr(pData.start)}T12:00:00Z`)).start;
+			const chargeEnd = this.getBerlinDay(new Date(`${formatDateStr(checkEnd)}T12:00:00Z`)).end;
+			const proportionalCharge = this.masterData?.agreements
+				? this.getHistoricalStandingCharge(chargeStart, chargeEnd)
+				: standingChargeEuros * (elapsedDays / totalDays);
 			const totalCostWithStandingCharge = pData.cost + proportionalCharge;
 
 			await this.writeStateObject(
@@ -2833,14 +3106,15 @@ class EnergyCompare extends utils.Adapter {
 				date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
 				timestamp: timestamp,
 				total: (await this.getStateAsync(`${basePath}.octopus.dailyConsumption`))?.val || 0,
-				totalCost: (await this.getStateAsync(`${basePath}.octopus.totalCost`))?.val || 0,
+				totalCost: (await this.getStateAsync(`${basePath}.octopus.totalCost`))?.val ?? null,
+				costStatus: (await this.getStateAsync(`${basePath}.octopus.costStatus`))?.val ?? 'legacy_unverified',
 			};
 
 			if (this.masterData && this.masterData.rates) {
-				for (const rate of this.masterData.rates) {
+				for (const rate of [...this.getKnownTariffRates(), { name: 'UNPRICED' }]) {
 					const name = this.sanitizeIdSegment(rate.name).toLowerCase();
 					dayObj[name] = (await this.getStateAsync(`${basePath}.octopus.${name}Consumption`))?.val || 0;
-					dayObj[`${name}Cost`] = (await this.getStateAsync(`${basePath}.octopus.${name}Cost`))?.val || 0;
+					dayObj[`${name}Cost`] = (await this.getStateAsync(`${basePath}.octopus.${name}Cost`))?.val ?? null;
 				}
 			}
 
@@ -2851,9 +3125,9 @@ class EnergyCompare extends utils.Adapter {
 					dayObj[`${slotName}Consumption`] =
 						(await this.getStateAsync(`${basePath}.octopus.${slotName}Consumption`))?.val || 0;
 					dayObj[`${slotName}Cost`] =
-						(await this.getStateAsync(`${basePath}.octopus.${slotName}Cost`))?.val || 0;
+						(await this.getStateAsync(`${basePath}.octopus.${slotName}Cost`))?.val ?? null;
 					dayObj[`${slotName}CostNet`] =
-						(await this.getStateAsync(`${basePath}.octopus.${slotName}CostNet`))?.val || 0;
+						(await this.getStateAsync(`${basePath}.octopus.${slotName}CostNet`))?.val ?? null;
 				}
 			}
 
@@ -2869,7 +3143,7 @@ class EnergyCompare extends utils.Adapter {
 				};
 
 				if (this.masterData && this.masterData.rates) {
-					for (const rate of this.masterData.rates) {
+					for (const rate of [...this.getKnownTariffRates(), { name: 'UNPRICED' }]) {
 						const name = this.sanitizeIdSegment(rate.name).toLowerCase();
 						inxDayObj[name] =
 							(await this.getStateAsync(`${basePath}.inexogy.${name}Consumption`))?.val || 0;

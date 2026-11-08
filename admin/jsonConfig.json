@@ -265,6 +265,13 @@
 					"lg": 4,
 					"xl": 4
 				},
+				"recalculateHistoricalPrices": {
+					"type": "checkbox",
+					"label": {"en": "Recalculate legacy days with historical prices", "de": "Alte Tage mit historischen Preisen neu berechnen"},
+					"help": {"en": "Opt-in, once per day within sync/retention limits, only with complete historical prices. Resumes after API limits; no repeated database export.", "de": "Optional, einmal je Tag im Sync-/Aufbewahrungszeitraum und nur bei vollständigen historischen Preisen. Fortsetzung nach API-Limits; kein erneuter Datenbankexport."},
+					"newLine": true,
+					"xs": 12
+				},
 				"retentionDays": {
 					"type": "number",
 					"label": "Data Retention Days (e.g. 60, 0 to disable)",
