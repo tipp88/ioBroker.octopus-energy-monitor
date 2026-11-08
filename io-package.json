@@ -180,6 +180,7 @@
     "recalculateHistoricalPrices": false,
     "retentionDays": 0,
     "enwgEnabled": false,
+    "enwgAutoGridFees": false,
     "enwgStartDate": "",
     "enwgGridFeeSt": "0",
     "enwgGridFeeNt": "0",

@@ -267,8 +267,14 @@
 				},
 				"recalculateHistoricalPrices": {
 					"type": "checkbox",
-					"label": {"en": "Recalculate legacy days with historical prices", "de": "Alte Tage mit historischen Preisen neu berechnen"},
-					"help": {"en": "Opt-in, once per day within sync/retention limits, only with complete historical prices. Resumes after API limits; no repeated database export.", "de": "Optional, einmal je Tag im Sync-/Aufbewahrungszeitraum und nur bei vollständigen historischen Preisen. Fortsetzung nach API-Limits; kein erneuter Datenbankexport."},
+					"label": {
+						"en": "Recalculate legacy days with historical prices",
+						"de": "Alte Tage mit historischen Preisen neu berechnen"
+					},
+					"help": {
+						"en": "Opt-in, once per day within sync/retention limits, only with complete historical prices. Resumes after API limits; no repeated database export.",
+						"de": "Optional, einmal je Tag im Sync-/Aufbewahrungszeitraum und nur bei vollständigen historischen Preisen. Fortsetzung nach API-Limits; kein erneuter Datenbankexport."
+					},
 					"newLine": true,
 					"xs": 12
 				},
@@ -339,6 +345,19 @@
 					"md": 6,
 					"lg": 4,
 					"xl": 4
+				},
+				"enwgAutoGridFees": {
+					"type": "checkbox",
+					"label": {
+						"en": "Automatic Octopus Module 3 grid fees (experimental)",
+						"de": "Automatische Octopus-Modul-3-Netzentgelte (experimentell)"
+					},
+					"help": {
+						"en": "Requires Octopus credentials. Uses date-specific net API fees and Berlin time windows. Keep valid manual fees/windows as fallback. Changing this option recalculates retained days.",
+						"de": "Benötigt Octopus-Zugangsdaten. Verwendet tagesgültige Netto-API-Entgelte und Berliner Zeitfenster. Gültige manuelle Entgelte/Zeitfenster als Rückfalloption beibehalten. Änderungen berechnen gespeicherte Tage neu."
+					},
+					"newLine": true,
+					"xs": 12
 				},
 				"gridFeesHeader": {
 					"type": "header",

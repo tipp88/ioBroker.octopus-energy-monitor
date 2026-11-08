@@ -81,8 +81,20 @@ Existing positive days remain cached. Enable **Recalculate legacy days with hist
 
 Newly fetched interval days expose `quality` below each daily source: expected/received distinct quarter hours, missing intervals, duplicates, conflicts, invalid intervals and `complete`. Berlin daylight-saving days expect 92 or 100 intervals instead of 96. Daily-only responses have no interval-quality assessment. Missing intervals are diagnostic only: positive cached days are not fetched again because of this flag. Zero-consumption days continue to be retried.
 
+### Automatic §14a grid fees (experimental)
+
+Enable **Automatic Octopus Module 3 grid fees** only alongside the existing §14a calculation. It requires Octopus credentials, an account and a grid-operator code from the selected meter location. Inexogy-only operation continues to use manual settings. Keep valid manual fees and time windows configured: they remain the fallback and are never overwritten.
+
+The adapter requests the German OE backend's `variableGridFees` for each required Berlin calendar date. Only Module 3 responses with a complete, unambiguous quarter-hour schedule, matching operator, explicit timestamp validity and a unique standard-fee baseline are used. API amounts are treated as **net cents/kWh**, consistent with the Germany Home Assistant integration; automatic gross adjustments use the historical agreement's VAT. Overnight windows and daylight-saving days are supported. Unsupported schedules or failed requests fall back to manual settings with a warning.
+
+The in-memory cache is scoped by account, operator and date (24 hours for valid responses, 15 minutes for fallback results; at most 400 entries). The backend has its own retry/cooldown diagnostics under `info.api.gridFees`. Daily source objects record `gridFeeSource` (`api`, `manual`, `manual_fallback`), `gridFeeFallbackReason` and the applied `gridFeeSchedule`. These fields describe that day's calculation, not live tariffs.
+
+Changing §14a settings recalculates days within the configured sync/retention range. Per-source configuration markers resume unfinished recalculations after restarts or API limits without re-exporting cached database intervals. Positive days calculated with manual fallback remain cached; a later API recovery alone does not trigger another consumption download. Automatic fees are covered by simulated API tests but still require validation against a real Module 3 account and bill before release. Calculated costs remain estimates.
+
 ## Changelog
 ### WORK IN PROGRESS
+* (tipp88) Add opt-in, date-specific Module 3 grid fees with validated schedules, scoped caching and manual fallback.
+* (tipp88) Record applied grid-fee sources and resume interrupted EnWG recalculations per source without duplicate interval exports.
 * (tipp88) Expose sync/API diagnostics and DST-aware daily interval completeness without refetching positive cached days.
 * (tipp88) Add bounded API retries, Retry-After cooldowns, expiry-aware JWT refresh and cancellable requests.
 * (tipp88) Paginate bounded, meter-scoped Octopus measurements with duplicate and cursor checks.

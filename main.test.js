@@ -156,6 +156,33 @@ describe('Independent provider operation', () => {
 		expect(calls.filter(call => call.command === 'storeState')).to.have.length(exportsBefore);
 	});
 
+	it('resumes EnWG changes from per-source markers after failure without repeat exports', async () => {
+		const { a, states, calls, errors } = fixture(true, true);
+		await a.syncData();
+		const exportsBefore = calls.filter(call => call.command === 'storeState').length;
+		a.enwgConfigHash = 'new-settings';
+		a.isEnwgActiveForDate = () => true;
+		const fetchDay = a.fetchOctopus;
+		let attempts = 0;
+		a.fetchOctopus = async (...args) => {
+			attempts++;
+			if (attempts === 1) { a.octopusRateLimited = true; return null; }
+			return fetchDay(...args);
+		};
+		await a.syncData();
+		expect(Object.keys(states).some(id => id.endsWith('.octopus.enwgConfigHash'))).to.equal(false);
+		expect(Object.values(states).some(state => state.val === 'new-settings')).to.equal(true);
+		// The global change flag has been cleared; the daily marker must still cause a retry.
+		expect(a.enwgConfigChanged).to.equal(false);
+		await a.syncData();
+		await a.syncData();
+		expect(attempts).to.equal(2);
+		expect(calls.filter(call => call.command === 'inexogyDay')).to.have.length(2);
+		expect(calls.filter(call => call.command === 'storeState')).to.have.length(exportsBefore);
+		expect(Object.entries(states).find(([id]) => id.endsWith('.octopus.enwgConfigHash'))[1].val).to.equal('new-settings');
+		expect(errors).to.deep.equal([]);
+	});
+
 	it('reprices positive legacy days only on opt-in with known prices and resumes after failure', async () => {
 		const {a, states, calls} = fixture(true, false);
 		await a.syncData();

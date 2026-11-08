@@ -4,6 +4,7 @@ const axios = require('axios');
 const { agreementAt, grossPrice, tariffRates } = require('./lib/historical-prices');
 const apiPolicy = require('./lib/api-policy');
 const { intervalQuality } = require('./lib/data-quality');
+const gridFeesApi = require('./lib/grid-fees');
 
 const AXIOS_TIMEOUT = 30000;
 const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
@@ -41,8 +42,10 @@ class EnergyCompare extends utils.Adapter {
 		this.apiStatus = {
 			octopus: { lastSuccess: 0, lastError: '' },
 			inexogy: { lastSuccess: 0, lastError: '' },
+			gridFees: { lastSuccess: 0, lastError: '' },
 		};
 		this.pageDuplicates = 0;
+		this.gridFeeCache = new Map();
 		this.http = {
 			get: async (url, options) => {
 				try {
@@ -116,9 +119,11 @@ class EnergyCompare extends utils.Adapter {
 				gridFeeSt: this.config.enwgGridFeeSt,
 				gridFeeHt: this.config.enwgGridFeeHt,
 				gridFeesAreGross: this.config.enwgGridFeesAreGross,
+				autoGridFees: !!this.config.enwgAutoGridFees,
 				timeWindows: this.config.enwgTimeWindows,
 			};
 			const currentHash = JSON.stringify(currentHashObj);
+			this.enwgConfigHash = currentHash;
 			const storedHashState = await this.getStateAsync(hashId);
 			if (!storedHashState || storedHashState.val !== currentHash) {
 				this.log.info(
@@ -490,11 +495,24 @@ class EnergyCompare extends utils.Adapter {
 		await this.writeStateObject(
 			'info.sync.nextRun',
 			'Next Scheduled Synchronization',
-			running ? 0 : Date.now() + Math.max(15, Number(this.config.updateInterval) || 60) * 60000,
+			running
+				? 0
+				: Date.now() +
+						Math.max(
+							15,
+							Math.min(Number(this.config.updateInterval) || 60, Math.floor(2147483647 / 60000)),
+						) *
+							60000,
 			'value.time',
 		);
-		for (const source of ['octopus', 'inexogy']) {
-			if (source === 'octopus' ? !this.hasOctopus : !this.hasInexogy) {
+		for (const source of ['octopus', 'inexogy', 'gridFees']) {
+			if (
+				source === 'gridFees'
+					? !this.hasOctopus || !this.enwgEnabled || !this.config.enwgAutoGridFees
+					: source === 'octopus'
+						? !this.hasOctopus
+						: !this.hasInexogy
+			) {
 				continue;
 			}
 			const status = this.apiStatus[source];
@@ -509,7 +527,11 @@ class EnergyCompare extends utils.Adapter {
 			}
 			await this.writeStateObject(`${base}.lastError`, 'Last API Error Code', status.lastError, 'text', 'string');
 			const retryAt =
-				source === 'octopus' ? this.apiCooldowns.get('https://api.oeg-kraken.energy/v1/graphql/') || 0 : 0;
+				source === 'gridFees'
+					? this.apiCooldowns.get(gridFeesApi.ENDPOINT) || 0
+					: source === 'octopus'
+						? this.apiCooldowns.get('https://api.oeg-kraken.energy/v1/graphql/') || 0
+						: 0;
 			await this.writeStateObject(
 				`${base}.retryAt`,
 				'API Retry Not Before',
@@ -519,7 +541,7 @@ class EnergyCompare extends utils.Adapter {
 			await this.writeStateObject(
 				`${base}.rateLimited`,
 				'API Rate Limited',
-				retryAt > Date.now(),
+				retryAt > Date.now() || (source === 'inexogy' && status.lastError.startsWith('HTTP_429')),
 				'indicator',
 				'boolean',
 			);
@@ -606,7 +628,7 @@ class EnergyCompare extends utils.Adapter {
 					timeout: AXIOS_TIMEOUT,
 				});
 			} catch (error) {
-				this.apiStatus.octopus.lastError = 'NETWORK_ERROR';
+				this.apiStatus[endpoint === gridFeesApi.ENDPOINT ? 'gridFees' : 'octopus'].lastError = 'NETWORK_ERROR';
 				if (this.stopping || !readOnly || attempt >= 2) {
 					throw error;
 				}
@@ -635,9 +657,7 @@ class EnergyCompare extends utils.Adapter {
 					this.octopusRateLimited = true;
 				}
 			}
-			if (endpoint.includes('oeg-kraken')) {
-				this.recordApiStatus('octopus', response);
-			}
+			this.recordApiStatus(endpoint === gridFeesApi.ENDPOINT ? 'gridFees' : 'octopus', response);
 			return response;
 		}
 	}
@@ -680,7 +700,7 @@ class EnergyCompare extends utils.Adapter {
 								maloNumber
 								meters { id number }
 								mop { name }
-								dno { name }
+								dno { name code }
 							}
 						}
 						electricityBalance
@@ -797,6 +817,7 @@ class EnergyCompare extends utils.Adapter {
 				meterId: malo.meters?.[0]?.id || '',
 				mopName: malo.mop?.name || 'Unknown',
 				dnoName: malo.dno?.name || 'Unknown',
+				gridOperatorCode: malo.dno?.code || '',
 				rates: rates,
 				monthlyStandingCharge: standingChargeEuros,
 				agreements: historicalDataIncomplete ? [] : malo.agreements || [],
@@ -1030,6 +1051,10 @@ class EnergyCompare extends utils.Adapter {
 	}
 
 	getEnwgTariffForTime(date, config) {
+		const automatic = config.enwgAutoGridFees && this.getAutomaticGridInterval(date);
+		if (automatic) {
+			return automatic.tariff;
+		}
 		const { month, hour, minute } = this.getBerlinParts(date);
 		return this.getEnwgTariffForClock(month, hour * 60 + minute, config);
 	}
@@ -1136,7 +1161,118 @@ class EnergyCompare extends utils.Adapter {
 		return 0;
 	}
 
-	getEnwgGridFees(config) {
+	gridFeeCacheKey(date) {
+		return JSON.stringify([
+			this.config.octopusAccount,
+			this.masterData?.gridOperatorCode,
+			this.getBerlinDay(date).date,
+		]);
+	}
+
+	getAutomaticGridInterval(date) {
+		const entry = this.gridFeeCache.get(this.gridFeeCacheKey(date));
+		return entry?.schedule?.intervals.get(Math.floor(date.getTime() / 900000) * 900000) || null;
+	}
+
+	async prepareGridFees(date) {
+		if (!this.config.enwgAutoGridFees || !this.isEnwgActiveForDate(date, this.config)) {
+			return;
+		}
+		const key = this.gridFeeCacheKey(date);
+		if (this.gridFeeCache.get(key)?.expires > Date.now()) {
+			return;
+		}
+		const day = this.getBerlinDay(date);
+		const operator = this.masterData?.gridOperatorCode;
+		let schedule = null;
+		let reason = 'missing_octopus_account_or_operator';
+		if (this.hasOctopus && this.config.octopusAccount && operator) {
+			try {
+				const response = await this.requestOctopus(
+					{
+						query: gridFeesApi.QUERY,
+						variables: {
+							accountNumber: this.config.octopusAccount,
+							gridOperatorCode: operator,
+							date: day.date,
+						},
+					},
+					gridFeesApi.ENDPOINT,
+				);
+				if (response.status === 200 && !response.data?.errors?.length) {
+					schedule = gridFeesApi.normalizeGridFees(
+						response.data?.data?.variableGridFees,
+						operator,
+						day.start,
+						day.end,
+					);
+					reason = schedule ? '' : 'unavailable_or_invalid_schedule';
+				} else {
+					reason = `HTTP_${response.status}_OR_GRAPHQL_ERROR`;
+				}
+			} catch {
+				reason = 'request_failed';
+			}
+		}
+		if (this.stopping) {
+			return;
+		}
+		const entry = { schedule, reason, expires: Date.now() + (schedule ? 86400000 : 900000) };
+		this.gridFeeCache.set(key, entry);
+		while (this.gridFeeCache.size > 400) {
+			this.gridFeeCache.delete(this.gridFeeCache.keys().next().value);
+		}
+		if (!schedule) {
+			this.log.warn(`§14a automatic grid fees unavailable for ${day.date} (${reason}); using manual settings.`);
+		}
+	}
+
+	async writeGridFeeSnapshot(base, date) {
+		const entry = this.config.enwgAutoGridFees ? this.gridFeeCache.get(this.gridFeeCacheKey(date)) : null;
+		const source = entry?.schedule ? 'api' : this.config.enwgAutoGridFees ? 'manual_fallback' : 'manual';
+		await this.writeStateObject(`${base}.gridFeeSource`, 'Grid Fee Source', source, 'text', 'string');
+		await this.writeStateObject(
+			`${base}.gridFeeFallbackReason`,
+			'Grid Fee Fallback Reason',
+			entry?.reason || '',
+			'text',
+			'string',
+		);
+		await this.writeStateObject(
+			`${base}.gridFeeSchedule`,
+			'Applied Grid Fee Schedule',
+			JSON.stringify(
+				entry?.schedule
+					? {
+							date: this.getBerlinDay(date).date,
+							module: entry.schedule.module,
+							rates: entry.schedule.rates,
+						}
+					: { fees: this.getEnwgGridFees(this.config), windows: this.config.enwgTimeWindows || [] },
+			),
+			'json',
+			'string',
+		);
+	}
+
+	/**
+	 * Resolve manual fees or a validated automatic interval in EUR/kWh.
+	 *
+	 * @param {ioBroker.AdapterConfig} config Adapter settings
+	 * @param {Date|null} [date] Interval instant (omitted for manual settings)
+	 * @param {number} [vat] Historical VAT fraction for automatic net fees
+	 */
+	getEnwgGridFees(config, date = null, vat = 0.19) {
+		const automatic = date && config.enwgAutoGridFees && this.getAutomaticGridInterval(date);
+		if (automatic) {
+			const standard = { net: automatic.standardNet, gross: automatic.standardNet * (1 + vat) };
+			return {
+				ST: standard,
+				NT: standard,
+				HT: standard,
+				[automatic.tariff]: { net: automatic.net, gross: automatic.net * (1 + vat) },
+			};
+		}
 		const isGross = !!config.enwgGridFeesAreGross;
 		const feeSt = this.parseConfigNumber(config.enwgGridFeeSt);
 		const feeNt = this.parseConfigNumber(config.enwgGridFeeNt);
@@ -1254,7 +1390,6 @@ class EnergyCompare extends utils.Adapter {
 
 	calculateHistoricalUsage(edges, start, end) {
 		const enwgActive = this.isEnwgActiveForDate(start, this.config);
-		const fees = enwgActive ? this.getEnwgGridFees(this.config) : null;
 		const result = {
 			total: 0,
 			totalCost: 0,
@@ -1310,6 +1445,7 @@ class EnergyCompare extends utils.Adapter {
 			const slot = result.slots[name];
 			slot.consumption += value;
 			let unitPrice = price?.euros ?? NaN;
+			const fees = enwgActive ? this.getEnwgGridFees(this.config, at, price?.vat ?? NaN) : null;
 			if (enwgActive && fees && result.enwgSlots) {
 				const tariff = this.getEnwgTariffForTime(at, this.config);
 				const enwgSlot = result.enwgSlots[tariff];
@@ -1324,7 +1460,7 @@ class EnergyCompare extends utils.Adapter {
 			}
 			slot.cost += value * unitPrice;
 			result.totalCost += value * unitPrice;
-			if (!price) {
+			if (!price || !Number.isFinite(unitPrice)) {
 				result.costAvailable = false;
 				result.costStatus = 'missing_historical_price';
 			}
@@ -1384,7 +1520,6 @@ class EnergyCompare extends utils.Adapter {
 				return null;
 			}
 			const enwgActive = this.isEnwgActiveForDate(start, this.config);
-			const fees = enwgActive ? this.getEnwgGridFees(this.config) : null;
 			const isSplit = (this.masterData.isTimeOfUse && this.masterData.rates.length > 1) || enwgActive;
 
 			const fetchRaw = !!this.masterData.agreements || isSplit || this.config.enableHistorySync;
@@ -1510,6 +1645,7 @@ class EnergyCompare extends utils.Adapter {
 			for (const edge of edges) {
 				const nodeVal = parseFloat(edge.node?.value || 0);
 				const startDt = new Date(edge.node.startAt);
+				const fees = enwgActive ? this.getEnwgGridFees(this.config, startDt) : null;
 				const nodeMs = startDt.getTime();
 
 				if (nodeMs < startMs || nodeMs >= endMs) {
@@ -2280,6 +2416,11 @@ class EnergyCompare extends utils.Adapter {
 					multiWindowTariff &&
 					(await this.getStateAsync(`${basePathDay}.${source}.tariffWindowVersion`))?.val !== 1;
 				let historicalPricesReady;
+				const enwgActive = this.isEnwgActiveForDate(targetDate, this.config);
+				const needsEnwgCorrection = async source =>
+					enwgActive &&
+					!!this.enwgConfigHash &&
+					(await this.getStateAsync(`${basePathDay}.${source}.enwgConfigHash`))?.val !== this.enwgConfigHash;
 				const needsHistoricalCorrection = async source => {
 					if (
 						!this.config.recalculateHistoricalPrices ||
@@ -2293,7 +2434,9 @@ class EnergyCompare extends utils.Adapter {
 				};
 				const correctOctopusTariff =
 					this.hasOctopus &&
-					((await needsTariffCorrection('octopus')) || (await needsHistoricalCorrection('octopus')));
+					((await needsTariffCorrection('octopus')) ||
+						(await needsHistoricalCorrection('octopus')) ||
+						(await needsEnwgCorrection('octopus')));
 				const octopusCached = this.isDayCached(checkOctopus, null);
 				const hasOctopus = !this.hasOctopus || (octopusCached && !correctOctopusTariff);
 
@@ -2310,10 +2453,10 @@ class EnergyCompare extends utils.Adapter {
 					hasInexogyData =
 						inexogyCached &&
 						!(await needsTariffCorrection('inexogy')) &&
-						!(await needsHistoricalCorrection('inexogy'));
+						!(await needsHistoricalCorrection('inexogy')) &&
+						!(await needsEnwgCorrection('inexogy'));
 				}
 
-				const enwgActive = this.isEnwgActiveForDate(targetDate, this.config);
 				const syncDecision = {
 					shouldProcess: !hasOctopus || !hasInexogyData || (this.enwgConfigChanged && enwgActive),
 					exportOctopus: !octopusCached,
@@ -2321,6 +2464,9 @@ class EnergyCompare extends utils.Adapter {
 				};
 
 				if (syncDecision.shouldProcess) {
+					if (enwgActive) {
+						await this.prepareGridFees(targetDate);
+					}
 					await this.writeStateObject(
 						'info.sync.currentDay',
 						'Current Synchronization Day',
@@ -2388,6 +2534,9 @@ class EnergyCompare extends utils.Adapter {
 					}
 
 					if (octopusData) {
+						if (enwgActive && (!hasOctopus || forceRecalculation)) {
+							await this.writeGridFeeSnapshot(`${basePathDay}.octopus`, targetDate);
+						}
 						if ('quality' in octopusData && octopusData.quality) {
 							await this.writeDayQuality(`${basePathDay}.octopus`, octopusData.quality);
 						}
@@ -2652,6 +2801,23 @@ class EnergyCompare extends utils.Adapter {
 								? octopusData.pricingVersion
 								: 0,
 						);
+					}
+					for (const [source, data, fresh] of [
+						['octopus', octopusData, !hasOctopus || forceRecalculation],
+						['inexogy', inexogyData, !hasInexogyData || forceRecalculation],
+					]) {
+						if (data && fresh && enwgActive && this.enwgConfigHash) {
+							if (source === 'inexogy') {
+								await this.writeGridFeeSnapshot(`${basePathDay}.${source}`, targetDate);
+							}
+							await this.writeStateObject(
+								`${basePathDay}.${source}.enwgConfigHash`,
+								'Applied EnWG Configuration',
+								this.enwgConfigHash,
+								'text',
+								'string',
+							);
+						}
 					}
 					if (inexogyData && 'quality' in inexogyData && inexogyData.quality) {
 						await this.writeDayQuality(`${basePathDay}.inexogy`, inexogyData.quality);
