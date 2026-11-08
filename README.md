@@ -75,8 +75,15 @@ Gross monthly standing charges are prorated by calendar day using each month's l
 
 Existing positive days remain cached. Enable **Recalculate legacy days with historical prices** to correct them once within the configured sync/retention range, only when complete historical consumption prices and standing charges are available. Per-source version markers resume unfinished work after API limits or restarts. Existing database intervals are not exported again. Uncorrected JSON entries carry `costStatus=legacy_unverified`; their previous amounts are preserved. Disabling the option stops further legacy corrections.
 
+### Sync diagnostics (development)
+
+`info.sync` exposes `running`, `currentDay` (last processed day) and the estimated `nextRun` timestamp. `info.api.octopus` and `info.api.inexogy` expose the last successful response timestamp, a sanitized error code, and rate-limit/cooldown status. Octopus cooldowns honor Retry-After; no automatic Inexogy retry policy is applied. These describe API responses, not guaranteed complete days.
+
+Newly fetched interval days expose `quality` below each daily source: expected/received distinct quarter hours, missing intervals, duplicates, conflicts, invalid intervals and `complete`. Berlin daylight-saving days expect 92 or 100 intervals instead of 96. Daily-only responses have no interval-quality assessment. Missing intervals are diagnostic only: positive cached days are not fetched again because of this flag. Zero-consumption days continue to be retried.
+
 ## Changelog
 ### WORK IN PROGRESS
+* (tipp88) Expose sync/API diagnostics and DST-aware daily interval completeness without refetching positive cached days.
 * (tipp88) Add bounded API retries, Retry-After cooldowns, expiry-aware JWT refresh and cancellable requests.
 * (tipp88) Paginate bounded, meter-scoped Octopus measurements with duplicate and cursor checks.
 * (tipp88) Resolve historical consumption prices and monthly standing charges by agreement and gross-price validity.
