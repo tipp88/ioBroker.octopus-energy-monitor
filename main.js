@@ -1186,6 +1186,8 @@ class EnergyCompare extends utils.Adapter {
 		const operator = this.masterData?.gridOperatorCode;
 		let schedule = null;
 		let reason = 'missing_octopus_account_or_operator';
+		let httpStatus = 0;
+		let rawResponse = 'null';
 		if (this.hasOctopus && this.config.octopusAccount && operator) {
 			try {
 				const response = await this.requestOctopus(
@@ -1199,14 +1201,21 @@ class EnergyCompare extends utils.Adapter {
 					},
 					gridFeesApi.ENDPOINT,
 				);
+				httpStatus = response.status;
+				const payload = response.data?.data?.variableGridFees;
+				// Keep only the requested fee fields, never headers, tokens or account data.
+				rawResponse = JSON.stringify(
+					payload == null
+						? null
+						: {
+								module: payload.module ?? null,
+								gridFees: payload.gridFees ?? null,
+							},
+				);
 				if (response.status === 200 && !response.data?.errors?.length) {
-					schedule = gridFeesApi.normalizeGridFees(
-						response.data?.data?.variableGridFees,
-						operator,
-						day.start,
-						day.end,
-					);
-					reason = schedule ? '' : 'unavailable_or_invalid_schedule';
+					const diagnostics = { reason: '' };
+					schedule = gridFeesApi.normalizeGridFees(payload, operator, day.start, day.end, diagnostics);
+					reason = diagnostics.reason;
 				} else {
 					reason = `HTTP_${response.status}_OR_GRAPHQL_ERROR`;
 				}
@@ -1222,6 +1231,23 @@ class EnergyCompare extends utils.Adapter {
 		while (this.gridFeeCache.size > 400) {
 			this.gridFeeCache.delete(this.gridFeeCache.keys().next().value);
 		}
+		const base = 'info.api.gridFees';
+		await this.writeStateObject(`${base}.responseDate`, 'Grid Fee Requested Date', day.date, 'text', 'string');
+		await this.writeStateObject(`${base}.httpStatus`, 'Grid Fee HTTP Status (0: no response)', httpStatus);
+		await this.writeStateObject(
+			`${base}.rawResponse`,
+			'Grid Fee API Response Fields',
+			rawResponse,
+			'json',
+			'string',
+		);
+		await this.writeStateObject(`${base}.rejectionReason`, 'Grid Fee Rejection Reason', reason, 'text', 'string');
+		await this.writeStateObject(
+			`${base}.responseTimestamp`,
+			'Grid Fee Diagnostic Timestamp',
+			Date.now(),
+			'value.time',
+		);
 		if (!schedule) {
 			this.log.warn(`§14a automatic grid fees unavailable for ${day.date} (${reason}); using manual settings.`);
 		}
