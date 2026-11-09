@@ -94,7 +94,7 @@ Changing §14a settings recalculates days within the configured sync/retention r
 The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawResponse` contains the API's `module` and `gridFees` fields before validation, `responseDate` is the requested Berlin day, `httpStatus` is the returned status (0 if no response), and `responseTimestamp` dates the diagnostic attempt. `rejectionReason` distinguishes missing data/module, a module other than Module 3, empty fees, invalid entries, validity errors, gaps and overlaps; entry indexes are zero-based. An empty reason means validation succeeded. Cache hits do not update these fields, and no additional requests are triggered for diagnostics. Failed attempts clear the response to JSON `null`. Authentication headers, tokens and account details are not included. These diagnostics report what the API says, not an independent confirmation of module enrollment.
 
 ## Changelog
-### WORK IN PROGRESS
+### **WORK IN PROGRESS**
 * (tipp88) Expose raw Module 3 response fields, request date, HTTP status and precise grid-fee rejection reasons.
 * (tipp88) Add opt-in, date-specific Module 3 grid fees with validated schedules, scoped caching and manual fallback.
 * (tipp88) Record applied grid-fee sources and resume interrupted EnWG recalculations per source without duplicate interval exports.
