@@ -37,10 +37,58 @@ function setup() {
 	a.hasOctopus = true;
 	a.enwgEnabled = true;
 	a.masterData = { gridOperatorCode: 'DNO', rates: [] };
+	a.writeStateObject = async () => {};
 	return a;
 }
 
 describe('Optional automatic Module 3 grid fees', () => {
+	it('distinguishes absent modules, empty schedules and invalid fee entries', () => {
+		const day = setup().getBerlinDay(new Date('2026-11-08T12:00:00Z'));
+		for (const [response, expected] of [
+			[null, 'missing_variable_grid_fees'],
+			[{ module: null, gridFees: [] }, 'missing_module'],
+			[{ module: 'MODULE_1', gridFees: [] }, 'module_not_3'],
+			[{ module: 'MODULE_3', gridFees: [] }, 'empty_grid_fees'],
+			[{ module: 'MODULE_3', gridFees: null }, 'invalid_grid_fees_array'],
+			[{ module: 'MODULE_3', gridFees: [null] }, 'invalid_grid_fee_entry'],
+		]) {
+			const diagnostics = { reason: '' };
+			expect(normalizeGridFees(response, 'DNO', day.start, day.end, diagnostics)).to.equal(null);
+			expect(diagnostics.reason).to.equal(expected);
+		}
+		const response = payload();
+		response.gridFees[1].rateTypeIntervalStart = '22:07:00';
+		const diagnostics = { reason: '' };
+		normalizeGridFees(response, 'DNO', day.start, day.end, diagnostics);
+		expect(diagnostics.reason).to.equal('unsupported_time_window:entry=1');
+	});
+
+	it('publishes response fields without account or authorization data and clears stale responses on failure', async () => {
+		const a = setup(),
+			at = new Date('2026-11-08T12:00:00Z');
+		const writes = new Map();
+		a.writeStateObject = async (id, _name, value) => writes.set(id, value);
+		const response = { module: 'MODULE_1', gridFees: [] };
+		a.requestOctopus = async () => ({
+			status: 200,
+			headers: { Authorization: 'secret' },
+			data: { data: { variableGridFees: { ...response, accountNumber: 'secret' } } },
+		});
+		await a.prepareGridFees(at);
+		expect(JSON.parse(writes.get('info.api.gridFees.rawResponse'))).to.deep.equal(response);
+		expect(writes.get('info.api.gridFees.httpStatus')).to.equal(200);
+		expect(writes.get('info.api.gridFees.responseDate')).to.equal('2026-11-08');
+		expect(writes.get('info.api.gridFees.rejectionReason')).to.equal('module_not_3');
+		a.gridFeeCache.clear();
+		a.requestOctopus = async () => {
+			throw new Error('secret');
+		};
+		await a.prepareGridFees(at);
+		expect(writes.get('info.api.gridFees.rawResponse')).to.equal('null');
+		expect(writes.get('info.api.gridFees.httpStatus')).to.equal(0);
+		expect(writes.get('info.api.gridFees.rejectionReason')).to.equal('request_failed');
+	});
+
 	for (const [date, count] of [
 		['2026-03-29', 92],
 		['2026-10-25', 100],
