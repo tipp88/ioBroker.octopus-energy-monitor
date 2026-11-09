@@ -67,7 +67,7 @@ To install this adapter in your ioBroker environment:
 
 Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
-### Historical pricing (development)
+### Historical pricing
 
 Newly fetched days use the agreement and dated gross prices applicable to each interval. Missing or ambiguous prices do not discard consumption: costs become `null`, with `totalCostAvailable=false` and daily `costStatus=missing_historical_price`. Dynamic tariffs identified by forecasts or product names remain unpriced until actual historical interval prices are supported; forecasts and current prices are not substituted.
 
@@ -75,13 +75,13 @@ Gross monthly standing charges are prorated by calendar day using each month's l
 
 Existing positive days remain cached. Enable **Recalculate legacy days with historical prices** to correct them once within the configured sync/retention range, only when complete historical consumption prices and standing charges are available. Per-source version markers resume unfinished work after API limits or restarts. Existing database intervals are not exported again. Uncorrected JSON entries carry `costStatus=legacy_unverified`; their previous amounts are preserved. Disabling the option stops further legacy corrections.
 
-### Sync diagnostics (development)
+### Sync diagnostics
 
 `info.sync` exposes `running`, `currentDay` (last processed day) and the estimated `nextRun` timestamp. `info.api.octopus` and `info.api.inexogy` expose the last successful response timestamp, a sanitized error code, and rate-limit/cooldown status. Octopus cooldowns honor Retry-After; no automatic Inexogy retry policy is applied. These describe API responses, not guaranteed complete days.
 
 Newly fetched interval days expose `quality` below each daily source: expected/received distinct quarter hours, missing intervals, duplicates, conflicts, invalid intervals and `complete`. Berlin daylight-saving days expect 92 or 100 intervals instead of 96. Daily-only responses have no interval-quality assessment. Missing intervals are diagnostic only: positive cached days are not fetched again because of this flag. Zero-consumption days continue to be retried.
 
-### Automatic §14a grid fees (experimental)
+### Automatic §14a grid fees
 
 Enable **Automatic Octopus Module 3 grid fees** only alongside the existing §14a calculation. It requires Octopus credentials, an account and a grid-operator code from the selected meter location. Inexogy-only operation continues to use manual settings. Keep valid manual fees and time windows configured: they remain the fallback and are never overwritten.
 
