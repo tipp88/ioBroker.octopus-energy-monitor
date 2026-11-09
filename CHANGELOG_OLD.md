@@ -1,4 +1,9 @@
 # Older changes
+## 0.6.8 (2026-07-06)
+* (tipp88) Fixed `rate.name` from external API being used unsanitized in ioBroker object IDs.
+* (tipp88) Fixed `setSmartChargeStatus()` sending the sanitized device ID to Octopus API instead of original ID.
+* (tipp88) Optimized database interval sync by consolidating all object scans into a single pre-fetch.
+
 ## 0.6.7 (2026-07-01)
 * (tipp88) Fixed missing UI translations for the `updateInterval` minimum warning.
 * (tipp88) Fixed missing external object ID sanitization (ioBroker repo compliance).
