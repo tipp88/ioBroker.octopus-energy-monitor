@@ -467,7 +467,7 @@ class EnergyCompare extends utils.Adapter {
 	}
 
 	async waitForRequest(ms) {
-		await apiPolicy.delay(ms, this.requestController.signal);
+		await apiPolicy.delay(ms, this.requestController.signal, this);
 	}
 
 	recordApiStatus(source, response) {

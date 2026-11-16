@@ -69,10 +69,27 @@ describe('API request lifecycle', () => {
 		await expect(a.fetchMeasurementPages({query:'query X {}',variables:{after:null}})).to.be.rejectedWith('Conflicting');
 	});
 	it('cancels delays and prevents requests and writes after unload',async()=>{
-		const pending=policy.delay(60000,a.requestController.signal);
+		const timer={};let cleared;
+		a.setTimeout=()=>timer;a.clearTimeout=handle=>{cleared=handle;};
+		const pending=Object.getPrototypeOf(a).waitForRequest.call(a,60000);
 		await a.onUnload(()=>{});
 		await expect(pending).to.be.rejectedWith('stopping');
+		expect(cleared).to.equal(timer);
 		await expect(a.requestOctopus({query:'query X {}'})).to.be.rejectedWith('stopping');
 		await expect(a.writeStateObject('x','X',1)).to.be.rejectedWith('stopping');
+	});
+	it('uses adapter timers and removes the abort listener after a delay',async()=>{
+		const controller=new AbortController();let callback,delayMs,cleared=false,removed=false;
+		const remove=controller.signal.removeEventListener.bind(controller.signal);
+		controller.signal.removeEventListener=(...args)=>{removed=true;return remove(...args);};
+		const adapter={setTimeout:(fn,ms)=>{callback=fn;delayMs=ms;return 1;},clearTimeout:()=>{cleared=true;}};
+		const pending=policy.delay(250,controller.signal,adapter);
+		expect(delayMs).to.equal(250);callback();await pending;
+		expect(removed).to.equal(true);controller.abort();expect(cleared).to.equal(false);
+	});
+	it('does not create a timer when already stopping',async()=>{
+		const controller=new AbortController();controller.abort();let scheduled=false;
+		await expect(policy.delay(250,controller.signal,{setTimeout:()=>{scheduled=true;}})).to.be.rejectedWith('stopping');
+		expect(scheduled).to.equal(false);
 	});
 });

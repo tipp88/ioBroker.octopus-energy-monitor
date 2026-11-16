@@ -276,7 +276,11 @@
 						"de": "Optional, einmal je Tag im Sync-/Aufbewahrungszeitraum und nur bei vollständigen historischen Preisen. Fortsetzung nach API-Limits; kein erneuter Datenbankexport."
 					},
 					"newLine": true,
-					"xs": 12
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
 				},
 				"retentionDays": {
 					"type": "number",
@@ -357,7 +361,11 @@
 						"de": "Benötigt Octopus-Zugangsdaten. Verwendet tagesgültige Netto-API-Entgelte und Berliner Zeitfenster. Gültige manuelle Entgelte/Zeitfenster als Rückfalloption beibehalten. Änderungen berechnen gespeicherte Tage neu."
 					},
 					"newLine": true,
-					"xs": 12
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
 				},
 				"gridFeesHeader": {
 					"type": "header",
