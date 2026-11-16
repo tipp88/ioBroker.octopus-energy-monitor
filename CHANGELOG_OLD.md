@@ -1,4 +1,11 @@
 # Older changes
+## 0.7.0 (2026-07-13)
+* (tipp88) Implemented native historical database synchronization to automatically push 15-minute intervals directly to InfluxDB, SQL, or History instances.
+* (tipp88) Massively optimized Inexogy retroactive API polling by switching to the Discovergy `readings` endpoint, fetching 96 data points in a single request.
+* (tipp88) Fixed strict ioBroker JSON schema compliance bugs in `admin/jsonConfig.json` regarding dropdown instance filtering.
+* (tipp88) Fixed calculated meter reading (`octopus.info.meterReading`) state missing `kWh` unit
+* (tipp88) Fixed permissions in Dependabot auto-merge workflow (`issues: write`)
+
 ## 0.6.8 (2026-07-06)
 * (tipp88) Fixed `rate.name` from external API being used unsanitized in ioBroker object IDs.
 * (tipp88) Fixed `setSmartChargeStatus()` sending the sanitized device ID to Octopus API instead of original ID.
