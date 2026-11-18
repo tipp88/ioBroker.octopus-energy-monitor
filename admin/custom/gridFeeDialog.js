@@ -223,13 +223,23 @@ function GridFeeDialog(props) {
 				h(
 					DialogActions,
 					null,
-					h(Button, { type: 'button', autoFocus: true, onClick: () => setResult(null) }, 'OK'),
+					h(
+						Button,
+						{
+							type: 'button',
+							variant: 'contained',
+							color: 'primary',
+							autoFocus: true,
+							onClick: () => setResult(null),
+						},
+						'OK',
+					),
 					preview &&
 						h(
 							Button,
 							{
 								type: 'button',
-								variant: 'contained',
+								variant: 'text',
 								color: 'primary',
 								onClick: () => {
 									apply(preview.settings);

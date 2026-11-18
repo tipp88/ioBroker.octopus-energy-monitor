@@ -97,6 +97,7 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Make OK the primary action in the grid-fee preview dialog.
 * (tipp88) Select the grid-fee dialog language from the ioBroker system configuration, independently of the client language.
 * (tipp88) Import manual NT/HT time windows for all months (`*`) instead of the lookup month.
 * (tipp88) Use the Admin theme and language for the grid-fee dialog and distinguish connection, API and invalid-schedule errors.
