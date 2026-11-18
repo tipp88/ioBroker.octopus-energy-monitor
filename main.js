@@ -1238,12 +1238,15 @@ class EnergyCompare extends utils.Adapter {
 	}
 
 	async onMessage(message) {
-		if (message.command !== 'previewGridFees' || !message.callback) {
+		if (!['previewGridFees', 'acceptManualGridFees'].includes(message.command) || !message.callback) {
 			return;
 		}
 		let reply;
 		try {
-			reply = await this.previewGridFees(message.message?.account);
+			reply =
+				message.command === 'acceptManualGridFees'
+					? this.acceptManualGridFees(message.message?.account)
+					: await this.previewGridFees(message.message?.account);
 		} catch {
 			reply = { error: 'gridFeeRequestFailed' };
 		}
@@ -1251,6 +1254,7 @@ class EnergyCompare extends utils.Adapter {
 	}
 
 	async previewGridFees(account) {
+		this.manualGridFeePreview = null;
 		const operator = this.masterData?.gridOperatorCode;
 		if (!this.hasOctopus || !account || account !== this.config.octopusAccount || !operator) {
 			return { error: 'gridFeeAccountRequired' };
@@ -1261,15 +1265,45 @@ class EnergyCompare extends utils.Adapter {
 			return { error: 'gridFeeRequestFailed' };
 		}
 		const payload = response.data?.data?.variableGridFees;
-		if (payload?.module !== 'MODULE_3') {
-			return { error: 'gridFeeWrongModule', args: [payload?.module || '—'] };
-		}
 		const diagnostics = { reason: '' };
-		const schedule = gridFeesApi.normalizeGridFees(payload, operator, day.start, day.end, diagnostics);
+		const schedule = gridFeesApi.normalizeGridFees(payload, operator, day.start, day.end, diagnostics, true);
 		const native = schedule && gridFeesApi.toManualSettings(schedule, Number(day.date.slice(5, 7)));
+		if (native && payload.module !== 'MODULE_3') {
+			this.manualGridFeePreview = { account, operator, date: day.date, native };
+			const windows = native.enwgTimeWindows.map(w => `${w.tariff} ${w.startTime}–${w.endTime}`).join(', ');
+			return {
+				error: 'gridFeeWrongModule',
+				args: [
+					payload.module,
+					day.date,
+					windows,
+					native.enwgGridFeeNt,
+					native.enwgGridFeeHt,
+					native.enwgGridFeeSt,
+				],
+			};
+		}
 		return native
 			? { native, result: 'gridFeeImported', args: [day.date] }
-			: { error: 'gridFeeInvalidSchedule', args: [diagnostics.reason || 'not_representable'] };
+			: {
+					error: 'gridFeeInvalidSchedule',
+					args: [payload?.module || '—', diagnostics.reason || 'not_representable'],
+				};
+	}
+
+	acceptManualGridFees(account) {
+		const preview = this.manualGridFeePreview;
+		if (
+			!preview ||
+			preview.account !== account ||
+			account !== this.config.octopusAccount ||
+			preview.operator !== this.masterData?.gridOperatorCode ||
+			preview.date !== this.getBerlinDay(new Date()).date
+		) {
+			return { error: 'gridFeePreviewRequired' };
+		}
+		this.manualGridFeePreview = null;
+		return { native: preview.native, result: 'manualGridFeeImported', args: [preview.date] };
 	}
 
 	async prepareGridFees(date) {

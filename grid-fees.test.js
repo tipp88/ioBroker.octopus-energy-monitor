@@ -71,6 +71,23 @@ describe('Optional automatic Module 3 grid fees', () => {
 		expect(JSON.stringify(a.config)).to.equal(original);
 	});
 
+	it('imports the reviewed Module 1 schedule only after a separate manual acceptance', async () => {
+		const a = setup();
+		const plan = { ...payload(), module: 'MODULE_1' };
+		a.requestOctopus = async () => ({ status: 200, data: { data: { variableGridFees: plan } } });
+		expect(a.acceptManualGridFees('account')).not.to.have.property('native');
+		const warning = await a.previewGridFees('account');
+		expect(warning.error).to.equal('gridFeeWrongModule');
+		expect(warning.args).to.include('MODULE_1');
+		expect(warning.args.join(' ')).to.include('HT 17:00–20:00');
+		expect(warning).not.to.have.property('native');
+		expect(a.acceptManualGridFees('other')).not.to.have.property('native');
+		const result = a.acceptManualGridFees('account');
+		expect(result.native.enwgGridFeeNt).to.equal('0.05');
+		expect(result.native.enwgTimeWindows).to.have.length(3);
+		expect(a.acceptManualGridFees('account')).not.to.have.property('native');
+	});
+
 	it('returns no form changes for another account, Module 1, API errors or unrepresentable schedules', async () => {
 		const a = setup();
 		expect((await a.previewGridFees('different')).error).to.equal('gridFeeAccountRequired');

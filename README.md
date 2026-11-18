@@ -83,7 +83,7 @@ Newly fetched interval days expose `quality` below each daily source: expected/r
 
 ### Automatic §14a grid fees
 
-With §14a and automatic retrieval selected, **Fetch and import Module 3 fees** queries the running instance's configured Octopus account before saving. The button copies today's validated Berlin schedule into the manual fallback fields as net EUR/kWh and replaces the time-window table with NT/HT windows for the current month. Review the rates and month assignments before saving. A different module, incomplete response or schedule that cannot be represented with all three fixed prices leaves the form untouched.
+With §14a and automatic retrieval selected, **Fetch and import Module 3 fees** queries the running instance's configured Octopus account before saving. The button copies today's validated Berlin schedule into the manual fallback fields as net EUR/kWh and replaces the time-window table with NT/HT windows for the current month. If Octopus reports another module with a valid schedule, the warning shows the prices and windows. Choose **Import windows anyway** and confirm to use those previewed values as a manual fallback. Review the rates and month assignments before saving.
 
 Enable **Automatic Octopus Module 3 grid fees** alongside the §14a calculation. The lookup requires Octopus credentials, an account and a grid-operator code from the selected meter location. Manual fees and time windows are optional in automatic mode. Inexogy-only operation uses manual settings.
 
@@ -97,6 +97,7 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Show prices and time windows for other reported modules and allow confirmed import as manual fallback.
 * (tipp88) Add a settings button to import a validated Module 3 schedule into the unsaved manual fallback fields.
 * (tipp88) Fetch automatic grid fees without manual settings and report unavailable §14a pricing when neither source provides a valid schedule.
 * (tipp88) Initialize the current billing period on rollover before its first daily reading, resetting totals and tariff slots while preserving the completed period.

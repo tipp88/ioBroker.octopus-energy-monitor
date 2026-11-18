@@ -370,6 +370,8 @@
 				"_previewGridFees": {
 					"type": "sendTo",
 					"command": "previewGridFees",
+					"variant": "contained",
+					"color": "primary",
 					"disabled": "!data.enwgEnabled || !data.enwgAutoGridFees",
 					"jsonData": "{\"account\":\"${data.octopusAccount}\"}",
 					"useNative": true,
@@ -384,11 +386,32 @@
 					},
 					"error": {
 						"gridFeeAccountRequired": { "de": "Die Instanz benötigt ein eingerichtetes Octopus-Konto mit geladenem Netzbetreibercode. Geänderte Kontodaten zuerst speichern.", "en": "Configure the Octopus account and wait for the instance to load the grid operator. Save changed account details first." },
-						"gridFeeWrongModule": { "de": "Octopus meldet %s. Eine Übernahme ist nur bei Modul 3 möglich.", "en": "Octopus reported %s. Only Module 3 fees can be imported." },
-						"gridFeeInvalidSchedule": { "de": "Dieser Tarifplan lässt sich nicht vollständig übernehmen (%s).", "en": "This schedule cannot be fully imported (%s)." },
+						"gridFeeWrongModule": { "de": "Octopus meldet %s. Zeitfenster am %s: %s, übrige Zeiten ST. Netto in €/kWh: NT %s, HT %s, ST %s. Für eine manuelle Vergleichsrechnung „Zeitfenster trotzdem übernehmen“ wählen.", "en": "Octopus reported %s. Windows on %s: %s, all other times ST. Net EUR/kWh: NT %s, HT %s, ST %s. For a manual comparison select “Import windows anyway”." },
+						"gridFeeInvalidSchedule": { "de": "Octopus meldet %s. Dieser Tarifplan lässt sich nicht vollständig übernehmen (%s).", "en": "Octopus reported %s. This schedule cannot be fully imported (%s)." },
 						"gridFeeRequestFailed": { "de": "Der Abruf der Netzentgelte bei Octopus ist fehlgeschlagen.", "en": "The Octopus grid-fee request failed." }
 					},
 					"newLine": true,
+					"xs": 12, "sm": 12, "md": 6, "lg": 6, "xl": 6
+				},
+				"_acceptManualGridFees": {
+					"type": "sendTo",
+					"command": "acceptManualGridFees",
+					"disabled": "!data.enwgEnabled || !data.enwgAutoGridFees",
+					"jsonData": "{\"account\":\"${data.octopusAccount}\"}",
+					"useNative": true,
+					"variant": "outlined",
+					"color": "primary",
+					"label": { "de": "Zeitfenster trotzdem übernehmen", "en": "Import windows anyway" },
+					"confirm": {
+						"type": "warning",
+						"text": { "de": "Die angezeigten Entgelte und Zeitfenster als manuellen Ersatz ins Formular übernehmen? Octopus hat für diesen Abruf kein aktives Modul 3 gemeldet.", "en": "Copy the displayed fees and windows into the manual fallback fields? Octopus did not report active Module 3 for this lookup." }
+					},
+					"error": {
+						"gridFeePreviewRequired": { "de": "Bitte zuerst die Entgelte abrufen. Die Übernahme benötigt eine aktuelle Vorschau mit gültigen Zeitfenstern.", "en": "Fetch fees first. A current preview with valid windows is required." }
+					},
+					"result": {
+						"manualGridFeeImported": { "de": "Manuelle Ersatzwerte vom %s eingetragen. Bitte prüfen und speichern.", "en": "Manual fallback values from %s entered. Review and save." }
+					},
 					"xs": 12, "sm": 12, "md": 6, "lg": 6, "xl": 6
 				},
 				"gridFeesHeader": {
