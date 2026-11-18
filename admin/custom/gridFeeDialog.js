@@ -1,6 +1,8 @@
 // ES module federation entry for Admin's jsonConfig custom component loader.
 // Use the host's React instance so hooks work with both Admin 7 and Admin 8.
 let React;
+let mui;
+let I18n;
 
 /**
  * Initialize the component with the React instance shared by the Admin host.
@@ -8,10 +10,19 @@ let React;
  * @param {object} scope Module federation share scope
  */
 export async function init(scope) {
-	const versions = Object.values(scope.react);
-	const shared = versions.find(entry => entry.loaded) || versions[0];
-	const module = (await shared.get())();
-	React = module.default || module;
+	async function load(name) {
+		const versions = Object.values(scope[name]);
+		const shared = versions.find(entry => entry.loaded) || versions[0];
+		return (await shared.get())();
+	}
+	const [react, material, gui] = await Promise.all([
+		load('react'),
+		load('@mui/material'),
+		load(scope['@iobroker/gui-components'] ? '@iobroker/gui-components' : '@iobroker/adapter-react-v5'),
+	]);
+	React = react.default || react;
+	mui = material.Button ? material : material.default;
+	I18n = gui.I18n || gui.default?.I18n;
 }
 
 /**
@@ -33,16 +44,11 @@ function GridFeeDialog(props) {
 	latest.current = props;
 	const [busy, setBusy] = useState(false);
 	const [result, setResult] = useState(null);
-	const dialog = useRef(null);
-	const de = (oContext.systemConfig?.common?.language || navigator.language).startsWith('de');
+	const { Button, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions } = mui;
+	const de = I18n.getLanguage().startsWith('de');
 	const tr = (german, english) => (de ? german : english);
 	const enabled = alive && data.enwgEnabled && data.enwgAutoGridFees;
 	const account = data.octopusAccount;
-	useEffect(() => {
-		if (result && dialog.current && !dialog.current.open) {
-			dialog.current.showModal();
-		}
-	}, [result]);
 	useEffect(() => {
 		setResult(null);
 	}, [enabled, account]);
@@ -64,13 +70,21 @@ function GridFeeDialog(props) {
 	async function fetchFees() {
 		setBusy(true);
 		let response;
+		let timer;
 		try {
-			response = await oContext.socket.sendTo(`${oContext.adapterName}.${oContext.instance}`, 'previewGridFees', {
+			const request = oContext.socket.sendTo(`${oContext.adapterName}.${oContext.instance}`, 'previewGridFees', {
 				account,
 			});
+			response = await Promise.race([
+				request,
+				new Promise(resolve => {
+					timer = setTimeout(() => resolve({ error: 'gridFeeTimeout' }), 60000);
+				}),
+			]);
 		} catch {
-			response = null;
+			response = { error: 'gridFeeSocketFailed' };
 		} finally {
+			clearTimeout(timer);
 			setBusy(false);
 		}
 		if (
@@ -83,17 +97,10 @@ function GridFeeDialog(props) {
 		if (response?.native) {
 			apply(response.native);
 		}
-		setResult(response && typeof response === 'object' ? response : { error: 'gridFeeRequestFailed' });
+		setResult(response && typeof response === 'object' ? response : { error: 'gridFeeInvalidReply' });
 	}
 
 	const preview = result?.preview;
-	const style = { padding: '0.55em 1em', borderRadius: '4px', font: 'inherit', cursor: 'pointer' };
-	const primary = {
-		...style,
-		backgroundColor: oContext.theme?.palette?.primary?.main || '#1976d2',
-		color: oContext.theme?.palette?.primary?.contrastText || 'white',
-		border: 0,
-	};
 	const amount = value => Number(value).toLocaleString(de ? 'de-DE' : 'en-GB', { maximumFractionDigits: 12 });
 	let body;
 	if (preview) {
@@ -142,20 +149,37 @@ function GridFeeDialog(props) {
 			'Save the account details and wait for the instance to load the grid operator.',
 		);
 	} else if (result?.error === 'gridFeeInvalidSchedule') {
-		body = `${tr('Tarifplan nicht verwendbar', 'Schedule unavailable')} (${result.args.join(', ')}).`;
+		body = `${tr('Tarifplan nicht verwendbar', 'Schedule unavailable')} (${(result.args || []).join(', ')}).`;
+	} else if (result?.error === 'gridFeeRequestFailed') {
+		body =
+			tr('Abruf bei Octopus fehlgeschlagen', 'Octopus request failed') +
+			(result.detail ? ` (${result.detail}).` : '.');
+	} else if (result?.error === 'gridFeeSocketFailed' || result?.error === 'gridFeeTimeout') {
+		body =
+			result.error === 'gridFeeTimeout'
+				? tr(
+						'Die Instanz hat innerhalb von 60 Sekunden nicht geantwortet.',
+						'The instance did not reply within 60 seconds.',
+					)
+				: tr('Admin konnte die Adapterinstanz nicht erreichen.', 'Admin could not reach the adapter instance.');
 	} else {
-		body = tr('Die Netzentgelte konnten nicht abgerufen werden.', 'The grid fee request failed.');
+		body = tr(
+			'Unerwartete Antwort der Adapterinstanz. Bitte prüfen, ob Admin-Dateien und laufende Instanz denselben Stand haben.',
+			'Unexpected adapter reply. Check that the Admin files and running instance are on the same version.',
+		);
 	}
 	return h(
 		'div',
-		{ style: { padding: 8 } },
+		{ style: { padding: 8, width: 'min(100%, 50rem)', boxSizing: 'border-box' } },
 		h(
-			'button',
+			Button,
 			{
 				type: 'button',
 				disabled: !enabled || busy,
 				onClick: fetchFees,
-				style: { ...primary, opacity: enabled && !busy ? 1 : 0.5 },
+				variant: 'contained',
+				color: 'primary',
+				fullWidth: true,
 			},
 			busy
 				? tr('Abruf läuft …', 'Fetching …')
@@ -163,38 +187,36 @@ function GridFeeDialog(props) {
 		),
 		result &&
 			h(
-				'dialog',
+				Dialog,
 				{
-					ref: dialog,
+					open: true,
 					'aria-label': tr('Octopus-Netzentgelte', 'Octopus grid fees'),
 					onClose: () => setResult(null),
-					style: { border: 0, borderRadius: 8, padding: 24, maxWidth: 'min(32rem, 90vw)' },
+					maxWidth: 'sm',
+					fullWidth: true,
 				},
 				h(
-					'strong',
+					DialogTitle,
 					null,
 					preview
 						? tr('Warnung: Modul 3 ist nicht aktiv', 'Warning: Module 3 is inactive')
 						: tr('Octopus-Netzentgelte', 'Octopus grid fees'),
 				),
-				h('div', { style: { margin: '1em 0' } }, body),
+				h(DialogContent, null, h(DialogContentText, { component: 'div' }, body)),
 				h(
-					'div',
-					{ style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } },
-					h(
-						'button',
-						{ type: 'button', autoFocus: true, style, onClick: () => dialog.current.close() },
-						'OK',
-					),
+					DialogActions,
+					null,
+					h(Button, { type: 'button', autoFocus: true, onClick: () => setResult(null) }, 'OK'),
 					preview &&
 						h(
-							'button',
+							Button,
 							{
 								type: 'button',
-								style: primary,
+								variant: 'contained',
+								color: 'primary',
 								onClick: () => {
 									apply(preview.settings);
-									dialog.current.close();
+									setResult(null);
 								},
 							},
 							tr('Trotzdem übernehmen', 'Import anyway'),

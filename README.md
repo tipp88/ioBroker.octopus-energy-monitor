@@ -97,6 +97,7 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Use the Admin theme and language for the grid-fee dialog and distinguish connection, API and invalid-schedule errors.
 * (tipp88) Display the reported module, date, prices and windows in a dialog with an optional manual fallback import.
 * (tipp88) Add a settings button to import a validated Module 3 schedule into the unsaved manual fallback fields.
 * (tipp88) Fetch automatic grid fees without manual settings and report unavailable §14a pricing when neither source provides a valid schedule.

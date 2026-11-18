@@ -94,6 +94,7 @@ describe('Optional automatic Module 3 grid fees', () => {
 			a.requestOctopus = async () => response;
 			const result = await a.previewGridFees('account');
 			expect(result.error).to.equal(error);
+			if (response.status === 429) expect(result.detail).to.equal('HTTP 429');
 			expect(result).not.to.have.property('native');
 		}
 	});

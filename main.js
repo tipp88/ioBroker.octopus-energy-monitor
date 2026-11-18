@@ -1244,8 +1244,17 @@ class EnergyCompare extends utils.Adapter {
 		let reply;
 		try {
 			reply = await this.previewGridFees(message.message?.account);
-		} catch {
-			reply = { error: 'gridFeeRequestFailed' };
+		} catch (error) {
+			const code = String(error?.code || '');
+			reply = {
+				error: 'gridFeeRequestFailed',
+				detail: /^[A-Z0-9_]{1,48}$/.test(code) ? code : 'REQUEST_EXCEPTION',
+			};
+		}
+		if (reply.error) {
+			this.log.warn(
+				`Grid fee preview: ${reply.error} (${reply.detail || reply.args?.join(', ') || 'account/operator not ready'}).`,
+			);
 		}
 		this.sendTo(message.from, message.command, reply, message.callback);
 	}
@@ -1258,7 +1267,12 @@ class EnergyCompare extends utils.Adapter {
 		const day = this.getBerlinDay(new Date());
 		const response = await this.requestGridFeeResponse(day.date, operator);
 		if (response.status !== 200 || response.data?.errors?.length) {
-			return { error: 'gridFeeRequestFailed' };
+			const codes = apiPolicy.errorCodes(response).filter(code => /^[A-Z0-9_-]{1,64}$/.test(code));
+			const detail = [
+				`HTTP ${response.status}`,
+				...(codes.length ? codes : response.data?.errors?.length ? ['GraphQL'] : []),
+			].join(', ');
+			return { error: 'gridFeeRequestFailed', detail };
 		}
 		const payload = response.data?.data?.variableGridFees;
 		const diagnostics = { reason: '' };
