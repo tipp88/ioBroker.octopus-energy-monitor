@@ -367,6 +367,30 @@
 					"lg": 12,
 					"xl": 12
 				},
+				"_previewGridFees": {
+					"type": "sendTo",
+					"command": "previewGridFees",
+					"disabled": "!data.enwgEnabled || !data.enwgAutoGridFees",
+					"jsonData": "{\"account\":\"${data.octopusAccount}\"}",
+					"useNative": true,
+					"showProcess": true,
+					"label": { "en": "Fetch and import Module 3 fees", "de": "Modul-3-Entgelte abrufen und übernehmen" },
+					"help": {
+						"en": "Uses the running instance's configured account. Replaces the draft manual fees and windows with today's net rates and windows for the current month. Review before saving.",
+						"de": "Nutzt das eingerichtete Konto der laufenden Instanz. Ersetzt die manuellen Entgelte und Zeitfenster im Formular durch die heutigen Nettopreise und Zeitfenster für den aktuellen Monat. Vor dem Speichern prüfen."
+					},
+					"result": {
+						"gridFeeImported": { "de": "Modul-3-Tarifplan vom %s übernommen. Bitte die Werte im Formular prüfen und speichern.", "en": "Imported the Module 3 schedule for %s. Review the form and save." }
+					},
+					"error": {
+						"gridFeeAccountRequired": { "de": "Die Instanz benötigt ein eingerichtetes Octopus-Konto mit geladenem Netzbetreibercode. Geänderte Kontodaten zuerst speichern.", "en": "Configure the Octopus account and wait for the instance to load the grid operator. Save changed account details first." },
+						"gridFeeWrongModule": { "de": "Octopus meldet %s. Eine Übernahme ist nur bei Modul 3 möglich.", "en": "Octopus reported %s. Only Module 3 fees can be imported." },
+						"gridFeeInvalidSchedule": { "de": "Dieser Tarifplan lässt sich nicht vollständig übernehmen (%s).", "en": "This schedule cannot be fully imported (%s)." },
+						"gridFeeRequestFailed": { "de": "Der Abruf der Netzentgelte bei Octopus ist fehlgeschlagen.", "en": "The Octopus grid-fee request failed." }
+					},
+					"newLine": true,
+					"xs": 12, "sm": 12, "md": 6, "lg": 6, "xl": 6
+				},
 				"gridFeesHeader": {
 					"type": "header",
 					"text": "Grid Fees (Netzentgelte in €/kWh)",

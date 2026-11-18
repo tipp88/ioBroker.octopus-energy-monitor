@@ -141,6 +141,7 @@
     "loglevel": "info",
     "tier": 3,
     "mode": "daemon",
+    "messagebox": true,
     "type": "energy",
     "compact": true,
     "connectionType": "cloud",

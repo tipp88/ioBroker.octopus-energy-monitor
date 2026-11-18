@@ -42,6 +42,51 @@ function setup() {
 }
 
 describe('Optional automatic Module 3 grid fees', () => {
+	it('imports a validated Berlin day into the unsaved form with the runtime option still disabled', async () => {
+		const a = setup();
+		const day = a.getBerlinDay(new Date('2026-11-18T12:00:00Z'));
+		a.getBerlinDay = () => day;
+		a.config.enwgAutoGridFees = false;
+		a.enwgEnabled = false;
+		const original = JSON.stringify(a.config);
+		let calls = 0;
+		a.requestOctopus = async (request, endpoint) => {
+			calls++;
+			expect(endpoint).to.equal(ENDPOINT);
+			expect(request.variables).to.deep.equal({ accountNumber: 'account', gridOperatorCode: 'DNO', date: '2026-11-18' });
+			return { status: 200, data: { data: { variableGridFees: payload() } } };
+		};
+		let reply;
+		a.sendTo = (_from, _command, response) => { reply = response; };
+		await a.onMessage({ command: 'previewGridFees', message: { account: 'account' }, callback: {}, from: 'test' });
+		expect(calls).to.equal(1);
+		expect(reply.native).to.deep.equal({
+			enwgGridFeeSt: '0.1', enwgGridFeeNt: '0.05', enwgGridFeeHt: '0.15', enwgGridFeesAreGross: false,
+			enwgTimeWindows: [
+				{ months: '11', tariff: 'NT', startTime: '00:00', endTime: '06:00' },
+				{ months: '11', tariff: 'HT', startTime: '17:00', endTime: '20:00' },
+				{ months: '11', tariff: 'NT', startTime: '22:00', endTime: '24:00' },
+			],
+		});
+		expect(JSON.stringify(a.config)).to.equal(original);
+	});
+
+	it('returns no form changes for another account, Module 1, API errors or unrepresentable schedules', async () => {
+		const a = setup();
+		expect((await a.previewGridFees('different')).error).to.equal('gridFeeAccountRequired');
+		const plan = payload();
+		for (const [response, error] of [
+			[{ status: 429 }, 'gridFeeRequestFailed'],
+			[{ status: 200, data: { data: { variableGridFees: { ...plan, module: 'MODULE_1' } } } }, 'gridFeeWrongModule'],
+			[{ status: 200, data: { data: { variableGridFees: { ...plan, gridFees: plan.gridFees.slice(0, 2) } } } }, 'gridFeeInvalidSchedule'],
+		]) {
+			a.requestOctopus = async () => response;
+			const result = await a.previewGridFees('account');
+			expect(result.error).to.equal(error);
+			expect(result).not.to.have.property('native');
+		}
+	});
+
 	it('distinguishes absent modules, empty schedules and invalid fee entries', () => {
 		const day = setup().getBerlinDay(new Date('2026-11-08T12:00:00Z'));
 		for (const [response, expected] of [

@@ -24,6 +24,7 @@ class EnergyCompare extends utils.Adapter {
 		this.on('ready', this.onReady.bind(this));
 		this.on('unload', this.onUnload.bind(this));
 		this.on('stateChange', this.onStateChange.bind(this));
+		this.on('message', this.onMessage.bind(this));
 		this.syncInterval = null;
 		this.masterData = null;
 		this.octopusAuthToken = null;
@@ -1226,6 +1227,51 @@ class EnergyCompare extends utils.Adapter {
 		return this.validateEnwgConfig(this.config);
 	}
 
+	requestGridFeeResponse(date, operator) {
+		return this.requestOctopus(
+			{
+				query: gridFeesApi.QUERY,
+				variables: { accountNumber: this.config.octopusAccount, gridOperatorCode: operator, date },
+			},
+			gridFeesApi.ENDPOINT,
+		);
+	}
+
+	async onMessage(message) {
+		if (message.command !== 'previewGridFees' || !message.callback) {
+			return;
+		}
+		let reply;
+		try {
+			reply = await this.previewGridFees(message.message?.account);
+		} catch {
+			reply = { error: 'gridFeeRequestFailed' };
+		}
+		this.sendTo(message.from, message.command, reply, message.callback);
+	}
+
+	async previewGridFees(account) {
+		const operator = this.masterData?.gridOperatorCode;
+		if (!this.hasOctopus || !account || account !== this.config.octopusAccount || !operator) {
+			return { error: 'gridFeeAccountRequired' };
+		}
+		const day = this.getBerlinDay(new Date());
+		const response = await this.requestGridFeeResponse(day.date, operator);
+		if (response.status !== 200 || response.data?.errors?.length) {
+			return { error: 'gridFeeRequestFailed' };
+		}
+		const payload = response.data?.data?.variableGridFees;
+		if (payload?.module !== 'MODULE_3') {
+			return { error: 'gridFeeWrongModule', args: [payload?.module || '—'] };
+		}
+		const diagnostics = { reason: '' };
+		const schedule = gridFeesApi.normalizeGridFees(payload, operator, day.start, day.end, diagnostics);
+		const native = schedule && gridFeesApi.toManualSettings(schedule, Number(day.date.slice(5, 7)));
+		return native
+			? { native, result: 'gridFeeImported', args: [day.date] }
+			: { error: 'gridFeeInvalidSchedule', args: [diagnostics.reason || 'not_representable'] };
+	}
+
 	async prepareGridFees(date) {
 		if (!this.config.enwgAutoGridFees || !this.isEnwgActiveForDate(date, this.config)) {
 			return;
@@ -1242,17 +1288,7 @@ class EnergyCompare extends utils.Adapter {
 		let rawResponse = 'null';
 		if (this.hasOctopus && this.config.octopusAccount && operator) {
 			try {
-				const response = await this.requestOctopus(
-					{
-						query: gridFeesApi.QUERY,
-						variables: {
-							accountNumber: this.config.octopusAccount,
-							gridOperatorCode: operator,
-							date: day.date,
-						},
-					},
-					gridFeesApi.ENDPOINT,
-				);
+				const response = await this.requestGridFeeResponse(day.date, operator);
 				httpStatus = response.status;
 				const payload = response.data?.data?.variableGridFees;
 				// Keep only the requested fee fields, never headers, tokens or account data.
