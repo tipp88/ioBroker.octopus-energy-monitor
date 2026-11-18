@@ -357,8 +357,8 @@
 						"de": "Automatische Octopus-Modul-3-Netzentgelte (experimentell)"
 					},
 					"help": {
-						"en": "Requires Octopus credentials. Uses date-specific net API fees and Berlin time windows. Keep valid manual fees/windows as fallback. Changing this option recalculates retained days.",
-						"de": "Benötigt Octopus-Zugangsdaten. Verwendet tagesgültige Netto-API-Entgelte und Berliner Zeitfenster. Gültige manuelle Entgelte/Zeitfenster als Rückfalloption beibehalten. Änderungen berechnen gespeicherte Tage neu."
+						"en": "Fetches grid fees from Octopus. Manual fees and time windows are optional and used if no valid API schedule is available. Changing this option recalculates retained days.",
+						"de": "Ruft Netzentgelte bei Octopus ab. Manuelle Entgelte und Zeitfenster sind optional und werden verwendet, wenn kein gültiger API-Zeitplan vorliegt. Änderungen berechnen gespeicherte Tage neu."
 					},
 					"newLine": true,
 					"xs": 12,

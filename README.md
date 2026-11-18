@@ -83,11 +83,11 @@ Newly fetched interval days expose `quality` below each daily source: expected/r
 
 ### Automatic §14a grid fees
 
-Enable **Automatic Octopus Module 3 grid fees** only alongside the existing §14a calculation. It requires Octopus credentials, an account and a grid-operator code from the selected meter location. Inexogy-only operation continues to use manual settings. Keep valid manual fees and time windows configured: they remain the fallback and are never overwritten.
+Enable **Automatic Octopus Module 3 grid fees** alongside the §14a calculation. The lookup requires Octopus credentials, an account and a grid-operator code from the selected meter location. Manual fees and time windows are optional in automatic mode. Inexogy-only operation uses manual settings.
 
-The adapter requests the German OE backend's `variableGridFees` for each required Berlin calendar date. Only Module 3 responses with a complete, unambiguous quarter-hour schedule, matching operator, explicit timestamp validity and a unique standard-fee baseline are used. API amounts are treated as **net cents/kWh**, consistent with the Germany Home Assistant integration; automatic gross adjustments use the historical agreement's VAT. Overnight windows and daylight-saving days are supported. Unsupported schedules or failed requests fall back to manual settings with a warning.
+The adapter requests the German OE backend's `variableGridFees` for each required Berlin calendar date. Only Module 3 responses with a complete, unambiguous quarter-hour schedule, matching operator, explicit timestamp validity and a unique standard-fee baseline are used. API amounts are treated as **net cents/kWh**, consistent with the Germany Home Assistant integration; automatic gross adjustments use the historical agreement's VAT. Overnight windows and daylight-saving days are supported. If the API schedule cannot be applied, valid manual settings serve as a fallback. Without a fallback the adapter warns once per instance start, records regular consumption and tariff costs, and marks the day's §14a values unavailable.
 
-The in-memory cache is scoped by account, operator and date (24 hours for valid responses, 15 minutes for fallback results; at most 400 entries). The backend has its own retry/cooldown diagnostics under `info.api.gridFees`. Daily source objects record `gridFeeSource` (`api`, `manual`, `manual_fallback`), `gridFeeFallbackReason` and the applied `gridFeeSchedule`. These fields describe that day's calculation, not live tariffs.
+The in-memory cache is scoped by account, operator and date (24 hours for valid responses, 15 minutes for fallback results; at most 400 entries). The backend has its own retry/cooldown diagnostics under `info.api.gridFees`. Daily source objects record `gridFeeSource` (`api`, `manual`, `manual_fallback`, or `unavailable`), `gridFeeFallbackReason` and the applied `gridFeeSchedule`. These fields describe that day's calculation, not live tariffs.
 
 Changing §14a settings recalculates days within the configured sync/retention range. Per-source configuration markers resume unfinished recalculations after restarts or API limits without re-exporting cached database intervals. Positive days calculated with manual fallback remain cached; a later API recovery alone does not trigger another consumption download. Automatic fees are covered by simulated API tests but still require validation against a real Module 3 account and bill before release. Calculated costs remain estimates.
 
@@ -95,6 +95,7 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Fetch automatic grid fees without manual settings and report unavailable §14a pricing when neither source provides a valid schedule.
 * (tipp88) Initialize the current billing period on rollover before its first daily reading, resetting totals and tariff slots while preserving the completed period.
 
 ### 1.2.1 (2026-11-16)

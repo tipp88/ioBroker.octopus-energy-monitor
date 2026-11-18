@@ -148,6 +148,7 @@ describe('Optional automatic Module 3 grid fees', () => {
 	});
 	it('does not call the API when disabled and retains manual fallback on errors', async () => {
 		const a = setup();
+		a.config.enwgTimeWindows = [{ tariff: 'NT', startTime: '00:00', endTime: '06:00' }];
 		let calls = 0;
 		a.requestOctopus = async () => {
 			calls++;
@@ -188,6 +189,9 @@ describe('Optional automatic Module 3 grid fees', () => {
 	it('applies automatic fees to historical costs and keeps source slots consistent', async () => {
 		const a = setup(),
 			at = new Date('2026-09-22T22:00:00Z');
+		delete a.config.enwgGridFeeSt;
+		delete a.config.enwgGridFeeNt;
+		delete a.config.enwgGridFeeHt;
 		a.masterData.agreements = [
 			{
 				id: 'A',

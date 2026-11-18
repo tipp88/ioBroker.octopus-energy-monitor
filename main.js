@@ -46,6 +46,7 @@ class EnergyCompare extends utils.Adapter {
 		};
 		this.pageDuplicates = 0;
 		this.gridFeeCache = new Map();
+		this.warnedMissingGridFeeFallback = false;
 		this.http = {
 			get: async (url, options) => {
 				try {
@@ -85,7 +86,8 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		// Validate §14a EnWG configuration
-		const validation = this.validateEnwgConfig(this.config);
+		const validation =
+			this.config.enwgEnabled && !this.config.enwgAutoGridFees ? this.validateManualGridFees() : { valid: true };
 		if (!validation.valid) {
 			this.log.error(
 				`§14a EnWG configuration is invalid: ${validation.error}. Disabling EnWG price calculations!`,
@@ -920,8 +922,29 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		const windows = config.enwgTimeWindows || [];
-		if (windows.length === 0) {
+		if (!Array.isArray(windows) || windows.length === 0) {
 			return { valid: false, error: 'No time windows configured.' };
+		}
+		const clock = /^(?:[01]\d|2[0-3]):(?:00|15|30|45)$/;
+		for (const win of windows) {
+			if (
+				!win ||
+				!['NT', 'ST', 'HT'].includes(win.tariff) ||
+				!clock.test(win.startTime) ||
+				!(clock.test(win.endTime) || win.endTime === '24:00') ||
+				win.startTime === win.endTime
+			) {
+				return { valid: false, error: 'Invalid tariff or time window.' };
+			}
+			const months = String(win.months ?? '').trim();
+			if (
+				months &&
+				months !== '*' &&
+				months.toLowerCase() !== 'all' &&
+				!months.split(',').every(month => /^(?:0?[1-9]|1[0-2])$/.test(month.trim()))
+			) {
+				return { valid: false, error: 'Invalid months in time window.' };
+			}
 		}
 
 		for (let month = 1; month <= 12; month++) {
@@ -1174,6 +1197,35 @@ class EnergyCompare extends utils.Adapter {
 		return entry?.schedule?.intervals.get(Math.floor(date.getTime() / 900000) * 900000) || null;
 	}
 
+	canCalculateEnwg(date) {
+		if (!this.isEnwgActiveForDate(date, this.config)) {
+			return false;
+		}
+		if (!this.config.enwgAutoGridFees) {
+			return true;
+		}
+		const source = this.gridFeeCache.get(this.gridFeeCacheKey(date))?.source;
+		return source === 'api' || source === 'manual_fallback';
+	}
+
+	hasManualGridFeeAmounts() {
+		const fees = [this.config.enwgGridFeeSt, this.config.enwgGridFeeNt, this.config.enwgGridFeeHt];
+		const amounts = fees.map(value => {
+			const raw = String(value ?? '')
+				.trim()
+				.replace(',', '.');
+			return /^(?:\d+\.?\d*|\.\d+)$/.test(raw) ? Number(raw) : NaN;
+		});
+		return amounts.every(value => Number.isFinite(value) && value >= 0) && amounts.some(value => value > 0);
+	}
+
+	validateManualGridFees() {
+		if (!this.hasManualGridFeeAmounts()) {
+			return { valid: false, error: 'Configure manual NT/ST/HT grid fees' };
+		}
+		return this.validateEnwgConfig(this.config);
+	}
+
 	async prepareGridFees(date) {
 		if (!this.config.enwgAutoGridFees || !this.isEnwgActiveForDate(date, this.config)) {
 			return;
@@ -1226,7 +1278,11 @@ class EnergyCompare extends utils.Adapter {
 		if (this.stopping) {
 			return;
 		}
-		const entry = { schedule, reason, expires: Date.now() + (schedule ? 86400000 : 900000) };
+		let source = 'api';
+		if (!schedule) {
+			source = this.validateManualGridFees().valid ? 'manual_fallback' : 'unavailable';
+		}
+		const entry = { schedule, reason, source, expires: Date.now() + (schedule ? 86400000 : 900000) };
 		this.gridFeeCache.set(key, entry);
 		while (this.gridFeeCache.size > 400) {
 			this.gridFeeCache.delete(this.gridFeeCache.keys().next().value);
@@ -1248,14 +1304,19 @@ class EnergyCompare extends utils.Adapter {
 			Date.now(),
 			'value.time',
 		);
-		if (!schedule) {
+		if (source === 'unavailable' && !this.warnedMissingGridFeeFallback) {
+			this.warnedMissingGridFeeFallback = true;
+			this.log.warn(
+				`§14a automatic grid fees unavailable for ${day.date} (${reason}). Configure manual grid fees and time windows for fallback. Continuing with regular tariff prices.`,
+			);
+		} else if (source === 'manual_fallback') {
 			this.log.warn(`§14a automatic grid fees unavailable for ${day.date} (${reason}); using manual settings.`);
 		}
 	}
 
 	async writeGridFeeSnapshot(base, date) {
 		const entry = this.config.enwgAutoGridFees ? this.gridFeeCache.get(this.gridFeeCacheKey(date)) : null;
-		const source = entry?.schedule ? 'api' : this.config.enwgAutoGridFees ? 'manual_fallback' : 'manual';
+		const source = this.config.enwgAutoGridFees ? entry?.source || 'unavailable' : 'manual';
 		await this.writeStateObject(`${base}.gridFeeSource`, 'Grid Fee Source', source, 'text', 'string');
 		await this.writeStateObject(
 			`${base}.gridFeeFallbackReason`,
@@ -1274,7 +1335,9 @@ class EnergyCompare extends utils.Adapter {
 							module: entry.schedule.module,
 							rates: entry.schedule.rates,
 						}
-					: { fees: this.getEnwgGridFees(this.config), windows: this.config.enwgTimeWindows || [] },
+					: source === 'unavailable'
+						? null
+						: { fees: this.getEnwgGridFees(this.config), windows: this.config.enwgTimeWindows || [] },
 			),
 			'json',
 			'string',
@@ -1415,7 +1478,7 @@ class EnergyCompare extends utils.Adapter {
 	}
 
 	calculateHistoricalUsage(edges, start, end) {
-		const enwgActive = this.isEnwgActiveForDate(start, this.config);
+		const enwgActive = this.canCalculateEnwg(start);
 		const result = {
 			total: 0,
 			totalCost: 0,
@@ -1545,7 +1608,7 @@ class EnergyCompare extends utils.Adapter {
 			if (!this.masterData) {
 				return null;
 			}
-			const enwgActive = this.isEnwgActiveForDate(start, this.config);
+			const enwgActive = this.canCalculateEnwg(start);
 			const isSplit = (this.masterData.isTimeOfUse && this.masterData.rates.length > 1) || enwgActive;
 
 			const fetchRaw = !!this.masterData.agreements || isSplit || this.config.enableHistorySync;
@@ -1792,7 +1855,7 @@ class EnergyCompare extends utils.Adapter {
 
 	async fetchInexogy(start, end) {
 		try {
-			const enwgActive = this.isEnwgActiveForDate(start, this.config);
+			const enwgActive = this.canCalculateEnwg(start);
 			const rates = this.getKnownTariffRates();
 			const isSplit =
 				!!this.masterData?.agreements || (this.masterData?.isTimeOfUse && rates.length > 1) || enwgActive;
@@ -2271,7 +2334,7 @@ class EnergyCompare extends utils.Adapter {
 			};
 		}
 
-		if (enwgActive) {
+		if (enwgActive && (await this.getStateAsync(`${basePathDay}.${source}.gridFeeSource`))?.val !== 'unavailable') {
 			result.enwgSlots = {};
 			for (const slotName of ['NT', 'ST', 'HT']) {
 				const safeName = slotName.toLowerCase();
@@ -2652,12 +2715,12 @@ class EnergyCompare extends utils.Adapter {
 								await this.writeStateObject(
 									`${basePathDay}.octopus.${safeName}Consumption`,
 									`Consumption EnWG ${slotName}`,
-									0,
+									this.config.enwgAutoGridFees && enwgActive ? null : 0,
 								);
 								await this.writeStateObject(
 									`${basePathDay}.octopus.${safeName}Cost`,
 									`Cost EnWG ${slotName}`,
-									0,
+									this.config.enwgAutoGridFees && enwgActive ? null : 0,
 									'value',
 									'number',
 									'€',
@@ -2665,7 +2728,7 @@ class EnergyCompare extends utils.Adapter {
 								await this.writeStateObject(
 									`${basePathDay}.octopus.${safeName}CostNet`,
 									`Cost Net EnWG ${slotName}`,
-									0,
+									this.config.enwgAutoGridFees && enwgActive ? null : 0,
 									'value',
 									'number',
 									'€',
@@ -2775,8 +2838,15 @@ class EnergyCompare extends utils.Adapter {
 								await this.writeStateObject(
 									`${basePathDay}.inexogy.${safeName}Consumption`,
 									`Consumption EnWG ${slotName}`,
-									0,
+									this.config.enwgAutoGridFees && enwgActive ? null : 0,
 								);
+								if (comparisonAvailable && enwgActive && this.config.enwgAutoGridFees) {
+									await this.writeStateObject(
+										`${basePathDay}.comparison.${safeName}Difference`,
+										`Difference EnWG ${slotName}`,
+										null,
+									);
+								}
 							}
 						}
 
@@ -3224,7 +3294,8 @@ class EnergyCompare extends utils.Adapter {
 							if (!periodMap[periodKey].enwgSlots[slotName]) {
 								periodMap[periodKey].enwgSlots[slotName] = { consumption: 0, cost: 0, costNet: 0 };
 							}
-							periodMap[periodKey].enwgSlots[slotName].consumption += Number(slotConsState?.val) || 0;
+							periodMap[periodKey].enwgSlots[slotName].consumption +=
+								slotConsState?.val === null ? NaN : Number(slotConsState?.val) || 0;
 							periodMap[periodKey].enwgSlots[slotName].cost +=
 								slotCostState?.val === null ? NaN : Number(slotCostState?.val) || 0;
 							periodMap[periodKey].enwgSlots[slotName].costNet +=
@@ -3621,7 +3692,7 @@ class EnergyCompare extends utils.Adapter {
 			if (this.isEnwgActiveForDate(targetDate, this.config)) {
 				for (const slotName of ['nt', 'st', 'ht']) {
 					dayObj[`${slotName}Consumption`] =
-						(await this.getStateAsync(`${basePath}.octopus.${slotName}Consumption`))?.val || 0;
+						(await this.getStateAsync(`${basePath}.octopus.${slotName}Consumption`))?.val ?? null;
 					dayObj[`${slotName}Cost`] =
 						(await this.getStateAsync(`${basePath}.octopus.${slotName}Cost`))?.val ?? null;
 					dayObj[`${slotName}CostNet`] =
@@ -3651,7 +3722,7 @@ class EnergyCompare extends utils.Adapter {
 				if (this.isEnwgActiveForDate(targetDate, this.config)) {
 					for (const slotName of ['nt', 'st', 'ht']) {
 						inxDayObj[`${slotName}Consumption`] =
-							(await this.getStateAsync(`${basePath}.inexogy.${slotName}Consumption`))?.val || 0;
+							(await this.getStateAsync(`${basePath}.inexogy.${slotName}Consumption`))?.val ?? null;
 					}
 				}
 

@@ -126,6 +126,39 @@ describe('Independent provider operation', () => {
 		});
 	}
 
+	it('fetches Module 1 diagnostics without manual settings and keeps ordinary daily usage', async () => {
+		const { a, states, errors } = fixture(true, true);
+		Object.assign(a.config, { octopusAccount: 'test', enwgEnabled: true, enwgAutoGridFees: true,
+			enwgStartDate: '2020-01-01', retentionDays: 2, enwgTimeWindows: [] });
+		const master = a.fetchOctopusMasterData;
+		a.fetchOctopusMasterData = async () => {
+			await master();
+			a.masterData.gridOperatorCode = 'test';
+			return a.masterData;
+		};
+		const response = { module: 'MODULE_1', gridFees: [{ rate: 'unused' }] };
+		const warnings = [];
+		a.log.warn = message => warnings.push(message);
+		a.requestOctopus = async () => ({ status: 200, data: { data: { variableGridFees: response } } });
+		await a.onReady();
+		await a.syncData();
+		expect(errors).to.deep.equal([]);
+		expect(JSON.parse(states['info.api.gridFees.rawResponse'].val)).to.deep.equal(response);
+		expect(states['info.api.gridFees.rejectionReason'].val).to.equal('module_not_3');
+		expect(warnings.filter(message => message.includes('Configure manual grid fees'))).to.have.length(1);
+		for (const source of ['octopus', 'inexogy']) {
+			const daily = Object.keys(states).filter(id => id.endsWith(`.${source}.gridFeeSource`));
+			expect(daily).to.have.length(2);
+			for (const id of daily) {
+				expect(states[id].val).to.equal('unavailable');
+				const base = id.slice(0, -'gridFeeSource'.length);
+				expect(states[base + 'gridFeeSchedule'].val).to.equal('null');
+				expect(states[base + 'dailyConsumption'].val).to.equal(2);
+				expect(states[base + 'ntConsumption'].val).to.equal(null);
+			}
+		}
+	});
+
 	it('corrects cached multi-window days once, resumes failures and does not export intervals again', async () => {
 		const { a, states, calls } = fixture(true, true);
 		await a.syncData();
