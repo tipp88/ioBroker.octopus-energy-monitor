@@ -3115,6 +3115,25 @@ class EnergyCompare extends utils.Adapter {
 			return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 		};
 
+		// A new billing period exists even before its first daily reading arrives.
+		// Seed it so current cannot retain the previous period on rollover day.
+		const activePeriod = this.getPeriodDates(today, billingPeriodStartDay);
+		periodMap[formatDateStr(activePeriod.start)] = {
+			start: activePeriod.start,
+			end: activePeriod.end,
+			consumption: 0,
+			cost: 0,
+			slots: Object.fromEntries(
+				[...this.getKnownTariffRates(), { name: 'UNPRICED' }].map(rate => [
+					this.sanitizeIdSegment(rate.name).toLowerCase(),
+					{ consumption: 0, cost: 0 },
+				]),
+			),
+			enwgSlots: this.isEnwgActiveForDate(today, this.config)
+				? Object.fromEntries(['nt', 'st', 'ht'].map(name => [name, { consumption: 0, cost: 0, costNet: 0 }]))
+				: {},
+		};
+
 		for (const id of Object.keys(objects)) {
 			if (id.startsWith(historyPrefix)) {
 				const relativeId = id.substring(historyPrefix.length);

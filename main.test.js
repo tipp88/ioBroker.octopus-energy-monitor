@@ -361,6 +361,70 @@ describe('Independent provider operation', () => {
 		}
 	});
 
+	for (const [year, month, day, previousKey, previousDays] of [
+		[2026, 10, 18, '2026-10-18', 31],
+		[2026, 11, 1, '2026-11-01', 30],
+	]) {
+		it(`rolls the current period over on ${year}-${month + 1}-${day} before its first reading`, async () => {
+			const RealDate = global.Date;
+			let now = new RealDate(year, month, day, 12);
+			// @ts-ignore
+			global.Date = function (...args) {
+				// @ts-ignore
+				return args.length ? new RealDate(...args) : new RealDate(now);
+			};
+			global.Date.now = () => now.getTime();
+			global.Date.UTC = RealDate.UTC;
+			global.Date.parse = RealDate.parse;
+			try {
+				const { a, states, errors } = fixture(true, false);
+				a.config.billingPeriodStartDay = day;
+				a.config.syncDays = previousDays;
+				a.config.retentionDays = previousDays;
+				a.enwgEnabled = true;
+				a.config.enwgEnabled = true;
+				a.config.enwgStartDate = '2026-01-01';
+				states['octopus.periods.current.startDate'] = { val: previousKey, ack: true };
+				states['octopus.periods.current.totalConsumption'] = { val: 534.251, ack: true };
+				states['octopus.periods.current.standardConsumption'] = { val: 500, ack: true };
+				states['octopus.periods.current.ntConsumption'] = { val: 400, ack: true };
+				await a.syncData();
+				expect(errors).to.deep.equal([]);
+				const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+				const end = a.getPeriodDates(now, day).end;
+				const endKey = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+				for (const base of [`octopus.periods.${key}`, 'octopus.periods.current']) {
+					expect(states[`${base}.startDate`].val).to.equal(key);
+					expect(states[`${base}.endDate`].val).to.equal(endKey);
+					for (const name of ['totalConsumption', 'totalCost', 'totalCostWithStandingCharge',
+						'standardConsumption', 'standardCost', 'unpricedConsumption',
+						'ntConsumption', 'ntCost', 'ntCostNet', 'stConsumption', 'htConsumption']) {
+						expect(states[`${base}.${name}`]?.val, `${base}.${name}`).to.equal(0);
+					}
+				}
+				const previousTotal = states[`octopus.periods.${previousKey}.totalConsumption`].val;
+				expect(previousTotal).to.equal(previousDays * 2);
+				expect(states[`octopus.periods.${previousKey}.totalCost`].val).to.be.closeTo(previousDays * 0.6, 0.001);
+
+				// Historical standing charges must also be zero for a period with no elapsed days.
+				a.masterData.agreements = [historicalAgreement('test', '2026-01-01', null, 30)];
+				await a.aggregateHistory();
+				expect(states['octopus.periods.current.totalCostWithStandingCharge'].val).to.equal(0);
+
+				// The next day's sync adds the first reading without changing the closed period.
+				now = new RealDate(year, month, day + 1, 12);
+				a.config.syncDays = 1;
+				await a.syncData();
+				expect(errors).to.deep.equal([]);
+				expect(states['octopus.periods.current.totalConsumption'].val).to.equal(2);
+				expect(states[`octopus.periods.${key}.totalConsumption`].val).to.equal(2);
+				expect(states[`octopus.periods.${previousKey}.totalConsumption`].val).to.equal(previousTotal);
+			} finally {
+				global.Date = RealDate;
+			}
+		});
+	}
+
 	it('aggregates cached Octopus days when the object view is incomplete after an instance start', async () => {
 		const RealDate = global.Date;
 		// @ts-ignore
