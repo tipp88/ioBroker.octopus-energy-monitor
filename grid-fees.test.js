@@ -63,9 +63,9 @@ describe('Optional automatic Module 3 grid fees', () => {
 		expect(reply.native).to.deep.equal({
 			enwgGridFeeSt: '0.1', enwgGridFeeNt: '0.05', enwgGridFeeHt: '0.15', enwgGridFeesAreGross: false,
 			enwgTimeWindows: [
-				{ months: '11', tariff: 'NT', startTime: '00:00', endTime: '06:00' },
-				{ months: '11', tariff: 'HT', startTime: '17:00', endTime: '20:00' },
-				{ months: '11', tariff: 'NT', startTime: '22:00', endTime: '24:00' },
+				{ months: '*', tariff: 'NT', startTime: '00:00', endTime: '06:00' },
+				{ months: '*', tariff: 'HT', startTime: '17:00', endTime: '20:00' },
+				{ months: '*', tariff: 'NT', startTime: '22:00', endTime: '24:00' },
 			],
 		});
 		expect(JSON.stringify(a.config)).to.equal(original);
@@ -80,7 +80,7 @@ describe('Optional automatic Module 3 grid fees', () => {
 		expect(result.preview.module).to.equal('MODULE_1');
 		expect(result.preview.date).to.match(/^\d{4}-\d{2}-\d{2}$/);
 		expect(result.preview.settings.enwgGridFeeNt).to.equal('0.05');
-		expect(result.preview.settings.enwgTimeWindows).to.have.length(3);
+		expect(result.preview.settings.enwgTimeWindows.map(w => w.months)).to.deep.equal(['*', '*', '*']);
 	});
 
 	it('returns no form changes for another account, API errors or unrepresentable schedules', async () => {

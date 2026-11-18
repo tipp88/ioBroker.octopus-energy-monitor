@@ -1277,7 +1277,7 @@ class EnergyCompare extends utils.Adapter {
 		const payload = response.data?.data?.variableGridFees;
 		const diagnostics = { reason: '' };
 		const schedule = gridFeesApi.normalizeGridFees(payload, operator, day.start, day.end, diagnostics, true);
-		const native = schedule && gridFeesApi.toManualSettings(schedule, Number(day.date.slice(5, 7)));
+		const native = schedule && gridFeesApi.toManualSettings(schedule);
 		if (native && payload.module !== 'MODULE_3') {
 			return { preview: { module: payload.module, date: day.date, settings: native } };
 		}

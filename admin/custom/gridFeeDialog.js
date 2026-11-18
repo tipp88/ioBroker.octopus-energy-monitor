@@ -2,7 +2,6 @@
 // Use the host's React instance so hooks work with both Admin 7 and Admin 8.
 let React;
 let mui;
-let I18n;
 
 /**
  * Initialize the component with the React instance shared by the Admin host.
@@ -15,14 +14,9 @@ export async function init(scope) {
 		const shared = versions.find(entry => entry.loaded) || versions[0];
 		return (await shared.get())();
 	}
-	const [react, material, gui] = await Promise.all([
-		load('react'),
-		load('@mui/material'),
-		load(scope['@iobroker/gui-components'] ? '@iobroker/gui-components' : '@iobroker/adapter-react-v5'),
-	]);
+	const [react, material] = await Promise.all([load('react'), load('@mui/material')]);
 	React = react.default || react;
 	mui = material.Button ? material : material.default;
-	I18n = gui.I18n || gui.default?.I18n;
 }
 
 /**
@@ -45,7 +39,26 @@ function GridFeeDialog(props) {
 	const [busy, setBusy] = useState(false);
 	const [result, setResult] = useState(null);
 	const { Button, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions } = mui;
-	const de = I18n.getLanguage().startsWith('de');
+	const config = oContext.systemConfig || props.systemConfig;
+	const suppliedLanguage = config?.common?.language || config?.language;
+	const [loadedLanguage, setLoadedLanguage] = useState(null);
+	useEffect(() => {
+		if (suppliedLanguage) {
+			return;
+		}
+		let active = true;
+		oContext.socket
+			.getObject('system.config')
+			.then(obj => {
+				if (active) setLoadedLanguage(obj?.common?.language);
+			})
+			.catch(() => {}); // No read permission: use the default translation, never the client locale.
+		return () => {
+			active = false;
+		};
+	}, [suppliedLanguage, oContext.socket]);
+	const language = suppliedLanguage || loadedLanguage || 'en';
+	const de = language.toLowerCase().split(/[-_]/)[0] === 'de';
 	const tr = (german, english) => (de ? german : english);
 	const enabled = alive && data.enwgEnabled && data.enwgAutoGridFees;
 	const account = data.octopusAccount;
@@ -126,15 +139,19 @@ function GridFeeDialog(props) {
 						.join(', ');
 					const times = tariff === 'ST' ? tr('übrige Zeiten', 'remaining hours') : windows;
 					const price = fees[`enwgGridFee${tariff[0]}${tariff[1].toLowerCase()}`];
-					return h('li', { key: tariff }, `${tariff}: ${times} · ${amount(price)} €/kWh netto`);
+					return h(
+						'li',
+						{ key: tariff },
+						`${tariff}: ${times} · ${amount(price)} €/kWh ${tr('netto', 'net')}`,
+					);
 				}),
 			),
 			h(
 				'p',
 				null,
 				tr(
-					'Als manuellen Ersatz für den angezeigten Monat ins Formular übernehmen?',
-					'Use this schedule in the form as a manual fallback for the displayed month?',
+					'Diese Zeitfenster ganzjährig als manuellen Ersatz ins Formular übernehmen?',
+					'Import these time windows as a year-round manual fallback?',
 				),
 			),
 		);
