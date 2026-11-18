@@ -232,7 +232,7 @@ function GridFeeDialog(props) {
 							autoFocus: true,
 							onClick: () => setResult(null),
 						},
-						'OK',
+						preview ? tr('Abbrechen', 'Cancel') : 'OK',
 					),
 					preview &&
 						h(

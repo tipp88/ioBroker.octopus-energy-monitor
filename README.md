@@ -83,7 +83,7 @@ Newly fetched interval days expose `quality` below each daily source: expected/r
 
 ### Automatic §14a grid fees
 
-With §14a and automatic retrieval selected, **Fetch and import Module 3 fees** queries the running instance's configured Octopus account before saving. The button copies today's validated Berlin schedule into the manual fallback fields as net EUR/kWh and replaces the time-window table with year-round NT/HT windows (`*` for all months). If Octopus reports another module with a valid schedule, a dialog shows the date, prices and time windows. In that dialog, **OK** dismisses the preview and **Import anyway** copies the displayed values to the manual fallback fields. Review the rates and month assignments before saving.
+With §14a and automatic retrieval selected, **Fetch and import Module 3 fees** queries the running instance's configured Octopus account before saving. The button copies today's validated Berlin schedule into the manual fallback fields as net EUR/kWh and replaces the time-window table with year-round NT/HT windows (`*` for all months). If Octopus reports another module with a valid schedule, a dialog shows the date, prices and time windows. In that dialog, **Cancel** dismisses the preview and **Import anyway** copies the displayed values to the manual fallback fields. Review the rates and month assignments before saving.
 
 Enable **Automatic Octopus Module 3 grid fees** alongside the §14a calculation. The lookup requires Octopus credentials, an account and a grid-operator code from the selected meter location. Manual fees and time windows are optional in automatic mode. Inexogy-only operation uses manual settings.
 
@@ -97,7 +97,7 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
-* (tipp88) Make OK the primary action in the grid-fee preview dialog.
+* (tipp88) Make Cancel the primary action in the grid-fee import confirmation.
 * (tipp88) Select the grid-fee dialog language from the ioBroker system configuration, independently of the client language.
 * (tipp88) Import manual NT/HT time windows for all months (`*`) instead of the lookup month.
 * (tipp88) Use the Admin theme and language for the grid-fee dialog and distinguish connection, API and invalid-schedule errors.
