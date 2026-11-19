@@ -189,6 +189,7 @@
     "enwgGridFeesAreGross": false,
     "enwgTimeWindows": [],
     "enableHistorySync": false,
+    "enableDailyHistorySync": false,
     "historyInstance": "",
     "billingPeriodStartDay": 1
   },

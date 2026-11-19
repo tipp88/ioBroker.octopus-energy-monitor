@@ -50,7 +50,9 @@ function GridFeeDialog(props) {
 		oContext.socket
 			.getObject('system.config')
 			.then(obj => {
-				if (active) setLoadedLanguage(obj?.common?.language);
+				if (active) {
+					setLoadedLanguage(obj?.common?.language);
+				}
 			})
 			.catch(() => {}); // No read permission: use the default translation, never the client locale.
 		return () => {

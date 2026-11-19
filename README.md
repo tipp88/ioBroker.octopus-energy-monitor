@@ -64,6 +64,8 @@ To install this adapter in your ioBroker environment:
    - **Configured Time Windows:** Define your local NT (low tariff) and HT (high tariff) times per month. Times that are not defined automatically fallback to ST (standard tariff). Windows must not overlap within the same month.
 6. **History Database Sync (Optional):**
    - **Enable Database Synchronization:** Select your target ioBroker history adapter (e.g., InfluxDB). The adapter will automatically register 15-minute states and push raw interval data points retroactively into the selected database.
+   - **Export Octopus daily values to the database:** Optional, independent of the 15-minute export. Uses the same database instance. Each completed Berlin calendar day contributes one point at local midnight per available series. For example, select `octopus-energy-monitor.0.octopus.daily.tariff.go.consumption` in a chart for daily GO kWh; use `tariff.go.cost` under the same daily channel for gross euros. Total series are `consumption` and `cost`; §14a series are `enwg.nt.consumption` and `enwg.nt.costGross` (likewise ST/HT). The chart objects are history series, not live readings.
+     Existing retained days are backfilled from local history (up to 30 changed days per sync) without additional Octopus requests. Unchanged values are not resent. Corrected or invalidated values update or remove only the original point where the backend supports it. Unsupported operations are reported, not replaced by duplicate or zero values. Local history retention does not delete old database points. Net costs, standing charges, comparisons and Inexogy are excluded.
 
 Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
 
@@ -97,6 +99,7 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Add an optional Octopus daily database export for total, tariff and §14a consumption and gross costs.
 * (tipp88) Make Cancel the primary action in the grid-fee import confirmation.
 * (tipp88) Select the grid-fee dialog language from the ioBroker system configuration, independently of the client language.
 * (tipp88) Import manual NT/HT time windows for all months (`*`) instead of the lookup month.

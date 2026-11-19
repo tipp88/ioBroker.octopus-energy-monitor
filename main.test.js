@@ -126,6 +126,23 @@ describe('Independent provider operation', () => {
 		});
 	}
 
+	it('exports a cached Octopus day when daily-only export is activated without another usage request', async () => {
+		const { a, states, calls } = fixture(true, false);
+		a.config.enableHistorySync = false;
+		await a.syncData();
+		a.config.enableDailyHistorySync = true;
+		a.getForeignStatesAsync = async pattern => Object.fromEntries(Object.entries(states)
+			.map(([id, state]) => [a.namespace + '.' + id, state])
+			.filter(([id]) => id.startsWith(pattern.split('*')[0])));
+		await a.syncData();
+		await a.syncData();
+		expect(calls.filter(c => c.command === 'octopusDay')).to.have.length(1);
+		const batches = calls.filter(c => c.command === 'storeState');
+		expect(batches).to.have.length(1);
+		expect(batches[0].payload.map(p => p.id.replace(a.namespace + '.octopus.daily.', '')).sort())
+			.to.deep.equal(['consumption', 'cost', 'tariff.standard.consumption', 'tariff.standard.cost']);
+	});
+
 	it('fetches Module 1 diagnostics without manual settings and keeps ordinary daily usage', async () => {
 		const { a, states, errors } = fixture(true, true);
 		Object.assign(a.config, { octopusAccount: 'test', enwgEnabled: true, enwgAutoGridFees: true,

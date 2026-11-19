@@ -5,6 +5,7 @@ const { agreementAt, grossPrice, tariffRates } = require('./lib/historical-price
 const apiPolicy = require('./lib/api-policy');
 const { intervalQuality } = require('./lib/data-quality');
 const gridFeesApi = require('./lib/grid-fees');
+const { exportDays } = require('./lib/daily-export');
 
 const AXIOS_TIMEOUT = 30000;
 const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
@@ -3071,6 +3072,22 @@ class EnergyCompare extends utils.Adapter {
 
 			// 4. Apply data retention
 			await this.applyDataRetention(updatedObjects);
+			if (
+				this.hasOctopus &&
+				this.config.enableDailyHistorySync &&
+				this.config.historyInstance &&
+				!this.stopping
+			) {
+				try {
+					await exportDays(this, updatedObjects);
+				} catch (error) {
+					if (!this.stopping) {
+						this.log.warn(
+							`Octopus daily export to ${this.config.historyInstance} interrupted; will retry: ${error.message}`,
+						);
+					}
+				}
+			}
 		} catch (error) {
 			this.log.error(`Error during syncData: ${error.message}`);
 		} finally {

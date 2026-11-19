@@ -305,11 +305,18 @@
 					"lg": 4,
 					"xl": 4
 				},
+				"enableDailyHistorySync": {
+					"type": "checkbox",
+					"label": { "de": "Octopus-Tageswerte in die Datenbank exportieren", "en": "Export Octopus daily values to the database" },
+					"help": { "de": "Exportiert gespeicherte Verbräuche und Bruttokosten als feste Diagramm-IDs, unabhängig vom 15-Minuten-Export.", "en": "Exports stored consumption and gross costs to stable chart IDs independently of the 15-minute export." },
+					"newLine": true,
+					"xs": 12, "sm": 12, "md": 6, "lg": 4, "xl": 4
+				},
 				"historyInstance": {
 					"type": "instance",
 					"label": "History Database Instance",
 					"adapter": "_dataSources",
-					"hidden": "!data.enableHistorySync",
+					"hidden": "!data.enableHistorySync && !data.enableDailyHistorySync",
 					"newLine": false,
 					"xs": 12,
 					"sm": 12,
