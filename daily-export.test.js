@@ -136,8 +136,15 @@ describe('Octopus daily chart export', () => {
 		set('history.2026.10.25.octopus.dailyConsumption', 2);
 		set('history.2026.11.19.octopus.dailyConsumption', 5); // still open
 		set('history.2026.10.26.inexogy.dailyConsumption', 4);
-		a.getForeignStatesAsync = async pattern =>
-			Object.fromEntries(Object.entries(states).filter(([id]) => id.startsWith(pattern.split('*')[0])));
+		set('history.2026.10.25.comparison.difference', 1);
+		set('history.2026.10.25.octopus.gridFeeSchedule', 'unused');
+		const reads = [];
+		a.getForeignStatesAsync = async ids => {
+			assert.ok(Array.isArray(ids));
+			assert.ok(ids.every(id => Object.hasOwn(states, id) && !id.includes('*')));
+			reads.push(ids);
+			return Object.fromEntries(ids.map(id => [id, states[id]]));
+		};
 		a.setObjectNotExistsAsync = async (id, obj) => {
 			objects[a.namespace + '.' + id] ||= obj;
 		};
@@ -150,6 +157,8 @@ describe('Octopus daily chart export', () => {
 		const run = () => exportDays(a, objects, new Date('2026-11-19T14:00Z'));
 		await run();
 		assert.equal(writes.length, 30);
+		assert.equal(reads.length, 2); // October and March, one bulk read each
+		assert.deepEqual(reads[0], [a.namespace + '.history.2026.10.25.octopus.dailyConsumption']);
 		await run();
 		assert.equal(writes.length, 32);
 		await run();

@@ -131,9 +131,9 @@ describe('Independent provider operation', () => {
 		a.config.enableHistorySync = false;
 		await a.syncData();
 		a.config.enableDailyHistorySync = true;
-		a.getForeignStatesAsync = async pattern => Object.fromEntries(Object.entries(states)
+		a.getForeignStatesAsync = async ids => Object.fromEntries(Object.entries(states)
 			.map(([id, state]) => [a.namespace + '.' + id, state])
-			.filter(([id]) => id.startsWith(pattern.split('*')[0])));
+			.filter(([id]) => ids.includes(id)));
 		await a.syncData();
 		await a.syncData();
 		expect(calls.filter(c => c.command === 'octopusDay')).to.have.length(1);

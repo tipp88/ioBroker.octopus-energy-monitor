@@ -99,6 +99,7 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Read daily export inputs by exact Octopus state IDs in monthly batches instead of wildcard searches.
 * (tipp88) Add an optional Octopus daily database export for total, tariff and §14a consumption and gross costs.
 * (tipp88) Make Cancel the primary action in the grid-fee import confirmation.
 * (tipp88) Select the grid-fee dialog language from the ioBroker system configuration, independently of the client language.
