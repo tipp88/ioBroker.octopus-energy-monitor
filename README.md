@@ -101,6 +101,7 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Handle sync cancellation on shutdown and keep scheduled syncs running after errors.
 * (tipp88) Use the configured sync interval for Octopus rate-limit cooldowns and the next-run estimate; honor longer Retry-After delays.
 * (tipp88) Preserve published Octopus billing periods and tariff totals when daily readings or tariff metadata are temporarily missing.
 * (tipp88) Allow sync intervals from 5 minutes and historical sync windows up to 731 days.

@@ -19,6 +19,12 @@ const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
 	hourCycle: 'h23',
 });
 
+class AdapterStoppingError extends Error {
+	constructor() {
+		super('Adapter stopping');
+	}
+}
+
 class EnergyCompare extends utils.Adapter {
 	constructor(options) {
 		super({ ...options, name: 'octopus-energy-monitor' });
@@ -147,17 +153,18 @@ class EnergyCompare extends utils.Adapter {
 		const intervalMs = this.syncIntervalMs;
 		this.log.info(`Scheduling data sync every ${intervalMs / 60000} minutes.`);
 
-		const scheduleNextSync = () => {
-			if (this.stopping) {
-				return;
+		const runScheduledSync = async () => {
+			try {
+				await this.syncData();
+			} catch (error) {
+				if (!(this.stopping && (error instanceof AdapterStoppingError || axios.isCancel(error) || error?.name === 'AbortError'))) {
+					this.log.error(`Scheduled synchronization failed: ${error?.message ?? error}`);
+				}
+			} finally {
+				if (!this.stopping) {
+					this.syncInterval = this.setTimeout(runScheduledSync, intervalMs);
+				}
 			}
-			this.syncInterval = this.setTimeout(
-				async () => {
-					await this.syncData();
-					scheduleNextSync();
-				},
-				intervalMs,
-			);
 		};
 
 		if (this.hasOctopus) {
@@ -165,10 +172,7 @@ class EnergyCompare extends utils.Adapter {
 			this.subscribeStates('octopus.devices.*.refresh');
 		}
 
-		this.syncTimeout = this.setTimeout(async () => {
-			await this.syncData();
-			scheduleNextSync();
-		}, 5000);
+		this.syncTimeout = this.setTimeout(runScheduledSync, 5000);
 	}
 
 	async cleanupLegacyHistory(adapterObjects) {
@@ -399,7 +403,7 @@ class EnergyCompare extends utils.Adapter {
 	 */
 	async writeStateObject(id, name, value, role = 'value', type = 'number', unit = '') {
 		if (this.stopping) {
-			throw new Error('Adapter stopping');
+			throw new AdapterStoppingError();
 		}
 		if (type === 'number' && typeof value === 'number' && !Number.isFinite(value)) {
 			value = null;
@@ -561,7 +565,7 @@ class EnergyCompare extends utils.Adapter {
 
 	async ensureOctopusToken(force = false) {
 		if (this.stopping) {
-			throw new Error('Adapter stopping');
+			throw new AdapterStoppingError();
 		}
 		if (this.tokenRefresh) {
 			return this.tokenRefresh;
@@ -597,7 +601,7 @@ class EnergyCompare extends utils.Adapter {
 
 	async requestOctopus(payload, endpoint = 'https://api.oeg-kraken.energy/v1/graphql/') {
 		if (this.stopping) {
-			throw new Error('Adapter stopping');
+			throw new AdapterStoppingError();
 		}
 		const retryAt = this.apiCooldowns.get(endpoint) || 0;
 		if (retryAt > Date.now()) {

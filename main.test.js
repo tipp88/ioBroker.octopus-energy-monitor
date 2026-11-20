@@ -115,6 +115,38 @@ describe('Independent provider operation', () => {
 		}
 	});
 
+	it('handles unload during the first diagnostic write without logging or scheduling another sync', async () => {
+		const { a, errors } = fixture(true, false);
+		const timers = [];
+		a.setTimeout = callback => timers.push(callback);
+		a.clearTimeout = () => {};
+		await a.onReady();
+		let finishWrite;
+		a.setObjectNotExistsAsync = () => new Promise(resolve => { finishWrite = resolve; });
+		const run = timers[0]();
+		let unloaded = false;
+		const unload = a.onUnload(() => { unloaded = true; });
+		finishWrite();
+		await Promise.all([run, unload]);
+		expect(unloaded).to.equal(true);
+		expect(a.activeSync).to.equal(null);
+		expect(errors).to.deep.equal([]);
+		expect(timers).to.have.length(1);
+	});
+
+	it('logs a failed sync and retries at the normal interval on initial and recurring runs', async () => {
+		const { a, errors } = fixture(true, false);
+		const timers = [];
+		a.config.updateInterval = 5;
+		a.setTimeout = (callback, delay) => timers.push({ callback, delay });
+		await a.onReady();
+		a.writeDiagnostics = async () => { throw new Error('diagnostic write failed'); };
+		await timers[0].callback();
+		await timers[1].callback();
+		expect(errors).to.deep.equal(Array(2).fill('Scheduled synchronization failed: diagnostic write failed'));
+		expect(timers.map(timer => timer.delay)).to.deep.equal([5000, 300000, 300000]);
+	});
+
 	for (const [octopus, inexogy] of [
 		[true, false],
 		[false, true],
