@@ -157,7 +157,12 @@ class EnergyCompare extends utils.Adapter {
 			try {
 				await this.syncData();
 			} catch (error) {
-				if (!(this.stopping && (error instanceof AdapterStoppingError || axios.isCancel(error) || error?.name === 'AbortError'))) {
+				if (
+					!(
+						this.stopping &&
+						(error instanceof AdapterStoppingError || axios.isCancel(error) || error?.name === 'AbortError')
+					)
+				) {
 					this.log.error(`Scheduled synchronization failed: ${error?.message ?? error}`);
 				}
 			} finally {
