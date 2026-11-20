@@ -216,9 +216,14 @@ describe('Optional automatic Module 3 grid fees', () => {
 		await a.prepareGridFees(at);
 		expect(calls).to.equal(0);
 		a.config.enwgAutoGridFees = true;
+		const warnings = [];
+		a.log.warn = text => warnings.push(text);
 		await a.prepareGridFees(at);
 		await a.prepareGridFees(at);
 		expect(calls).to.equal(1);
+		await a.prepareGridFees(new Date('2026-09-24T12:00:00Z'));
+		expect(calls).to.equal(2);
+		expect(warnings.filter(text => text.includes('using manual settings'))).to.have.length(1);
 		expect(a.getEnwgGridFees(a.config, at).ST.net).to.equal(0.2);
 		const writes = new Map();
 		a.writeStateObject = async (id, _name, val) => writes.set(id, val);

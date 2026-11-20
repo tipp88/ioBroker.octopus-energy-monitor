@@ -49,6 +49,7 @@ class EnergyCompare extends utils.Adapter {
 		this.pageDuplicates = 0;
 		this.gridFeeCache = new Map();
 		this.warnedMissingGridFeeFallback = false;
+		this.warnedUsingGridFeeFallback = false;
 		this.http = {
 			get: async (url, options) => {
 				try {
@@ -140,7 +141,7 @@ class EnergyCompare extends utils.Adapter {
 
 		const MAX_INTERVAL_MS = 2147483647;
 		const intervalMinutes = Math.max(
-			15,
+			5,
 			Math.min(Number(this.config.updateInterval) || 60, Math.floor(MAX_INTERVAL_MS / 60000)),
 		);
 		this.log.info(`Scheduling data sync every ${intervalMinutes} minutes.`);
@@ -1363,7 +1364,8 @@ class EnergyCompare extends utils.Adapter {
 			this.log.warn(
 				`§14a automatic grid fees unavailable for ${day.date} (${reason}). Configure manual grid fees and time windows for fallback. Continuing with regular tariff prices.`,
 			);
-		} else if (source === 'manual_fallback') {
+		} else if (source === 'manual_fallback' && !this.warnedUsingGridFeeFallback) {
+			this.warnedUsingGridFeeFallback = true;
 			this.log.warn(`§14a automatic grid fees unavailable for ${day.date} (${reason}); using manual settings.`);
 		}
 	}

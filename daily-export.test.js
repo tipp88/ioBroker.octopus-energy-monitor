@@ -149,7 +149,12 @@ describe('Octopus daily chart export', () => {
 			objects[a.namespace + '.' + id] ||= obj;
 		};
 		a.writeStateObject = async (id, _name, val) => set(id, val);
+		const probes = [];
 		a.sendToAsync = async (target, cmd, payload) => {
+			if (cmd === 'getHistory') {
+				probes.push(payload);
+				return { result: [] };
+			}
 			if (cmd === 'storeState') writes.push(...payload.map(row => [target, row.state.ts]));
 			else assert.equal(cmd, 'enableHistory');
 			return { success: true };
@@ -157,12 +162,15 @@ describe('Octopus daily chart export', () => {
 		const run = () => exportDays(a, objects, new Date('2026-11-19T14:00Z'));
 		await run();
 		assert.equal(writes.length, 30);
+		objects[a.namespace + '.octopus.daily.consumption'].common.custom = { 'history.0': { enabled: true } };
 		assert.equal(reads.length, 2); // October and March, one bulk read each
 		assert.deepEqual(reads[0], [a.namespace + '.history.2026.10.25.octopus.dailyConsumption']);
 		await run();
 		assert.equal(writes.length, 32);
+		assert.equal(probes.length, 1); // Both remaining March days share one range query.
 		await run();
 		assert.equal(writes.length, 32);
+		assert.equal(probes.length, 1); // Confirmed days don't query InfluxDB at all.
 		const times = writes.map(entry => entry[1]);
 		for (const utc of ['2026-03-28T23:00Z', '2026-03-29T22:00Z', '2026-10-24T22:00Z'])
 			assert.ok(times.includes(Date.parse(utc)));

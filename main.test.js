@@ -99,6 +99,22 @@ describe('Independent provider operation', () => {
 		return { a, states, objects, calls, errors };
 	}
 
+	it('allows a two-year lookback in Admin and schedules the next run at the five-minute minimum', async () => {
+		const settings = require('./admin/jsonConfig.json').items.settingsTab.items;
+		expect(settings.syncDays.max).to.be.at.least(731);
+		expect(settings.updateInterval.min).to.equal(5);
+		for (const minutes of [1, 5, 15]) {
+			const { a } = fixture(true, false);
+			a.config.updateInterval = minutes;
+			const timers = [];
+			a.setTimeout = (callback, delay) => timers.push({ callback, delay });
+			a.syncData = async () => {};
+			await a.onReady();
+			await timers[0].callback();
+			expect(timers[1].delay).to.equal(Math.max(5, minutes) * 60000);
+		}
+	});
+
 	for (const [octopus, inexogy] of [
 		[true, false],
 		[false, true],

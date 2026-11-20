@@ -55,6 +55,8 @@ To install this adapter in your ioBroker environment:
    - Enter your Inexogy portal Email & Password. The adapter automatically manages Basic Auth parsing and translates it into Discovergy API queries.
 
 3. **General Settings:**
+   - **Update interval:** At least 5 minutes between sync runs (default: 60). This does not change the 15-minute consumption data resolution.
+   - **Historical sync days:** 1–731 days (default: 30), enough for two years including a leap day. Set data retention at least as high, or to 0 for unlimited retention.
    - **Discrepancy Threshold:** Defines how many `kWh` difference must be present between Octopus and Inexogy to trigger the `hasDiscrepancy: true` state flag. Default is `0.1 kWh`.
 
 4. **§14a EnWG Settings (Optional):**
@@ -67,7 +69,7 @@ To install this adapter in your ioBroker environment:
    - **Export Octopus daily values to the database:** Optional, independent of the 15-minute export. Uses the same database instance. Each completed Berlin calendar day contributes one point at local midnight per available series. For example, select `octopus-energy-monitor.0.octopus.daily.tariff.go.consumption` in a chart for daily GO kWh; use `tariff.go.cost` under the same daily channel for gross euros. Total series are `consumption` and `cost`; §14a series are `enwg.nt.consumption` and `enwg.nt.costGross` (likewise ST/HT). The chart objects are history series, not live readings.
      Existing retained days are backfilled from local history (up to 30 changed days per sync) without additional Octopus requests. Unchanged values are not resent. Corrected or invalidated values update or remove only the original point where the backend supports it. Unsupported operations are reported, not replaced by duplicate or zero values. Local history retention does not delete old database points. Net costs, standing charges, comparisons and Inexogy are excluded.
 
-Once configured, the adapter handles the rest! It periodically syncs the last 30 days of data according to the configured update interval. Data manifests under the `octopus-energy-monitor.0.history.YYYY.MM.DD` path.
+The adapter syncs the configured lookback period and stores daily data under `octopus-energy-monitor.0.history.YYYY.MM.DD`.
 
 ### Historical pricing
 
@@ -99,6 +101,8 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Allow sync intervals from 5 minutes and historical sync windows up to 731 days.
+* (tipp88) Batch daily history existence checks per series and warn only once per instance start when automatic grid fees fall back to manual settings.
 * (tipp88) Read daily export inputs by exact Octopus state IDs in monthly batches instead of wildcard searches.
 * (tipp88) Add an optional Octopus daily database export for total, tariff and §14a consumption and gross costs.
 * (tipp88) Make Cancel the primary action in the grid-fee import confirmation.

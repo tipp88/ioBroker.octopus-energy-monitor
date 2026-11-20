@@ -221,7 +221,7 @@
 				"updateInterval": {
 					"type": "number",
 					"label": "Update Interval (minutes)",
-					"min": 15,
+					"min": 5,
 					"help": {
 						"en": "Polling frequency. Recommended: 15-60 min. Warning: Values below 15 min cause excessive API calls and high CPU load during data aggregation.",
 						"de": "Abfrageintervall. Empfohlen: 15-60 min. Warnung: Werte unter 15 min verursachen übermäßige API-Aufrufe und hohe CPU-Auslastung bei der Datenaggregation.",
@@ -257,7 +257,7 @@
 					"type": "number",
 					"label": "Historical Sync Days (Default: 30)",
 					"min": 1,
-					"max": 365,
+					"max": 731,
 					"newLine": false,
 					"xs": 12,
 					"sm": 12,
