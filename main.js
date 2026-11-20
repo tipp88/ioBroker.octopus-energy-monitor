@@ -6,8 +6,11 @@ const apiPolicy = require('./lib/api-policy');
 const { intervalQuality } = require('./lib/data-quality');
 const gridFeesApi = require('./lib/grid-fees');
 const { exportDays } = require('./lib/daily-export');
+const { repairIntervals } = require('./lib/interval-repair');
 
 const AXIOS_TIMEOUT = 30000;
+const DISCREPANCY_FIRST_RETRY_MS = 60 * 60 * 1000;
+const DISCREPANCY_REPEAT_MS = 24 * DISCREPANCY_FIRST_RETRY_MS;
 const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
 	timeZone: 'Europe/Berlin',
 	year: 'numeric',
@@ -1663,7 +1666,7 @@ class EnergyCompare extends utils.Adapter {
 		throw new Error('Octopus pagination exceeded its safety limit');
 	}
 
-	async fetchOctopus(start, end) {
+	async fetchOctopus(start, end, forIntervalRepair = false) {
 		try {
 			if (!this.masterData) {
 				return null;
@@ -1770,9 +1773,23 @@ class EnergyCompare extends utils.Adapter {
 			if (quality) {
 				quality.duplicates += this.pageDuplicates;
 			}
+			const repairPoints =
+				forIntervalRepair && fetchRaw
+					? edges.flatMap(({ node }) => {
+							const ts = Date.parse(node.startAt);
+							const val = Number(node.value);
+							return Date.parse(node.endAt) - ts === 900000 &&
+								node.value != null &&
+								String(node.value).trim() !== '' &&
+								Number.isFinite(val) &&
+								val >= 0
+								? [{ ts, val }]
+								: [];
+						})
+					: [];
 			if (this.masterData.agreements) {
 				const result = this.calculateHistoricalUsage(edges, start, end);
-				return result ? { ...result, quality } : null;
+				return result ? { ...result, quality, repairPoints } : null;
 			}
 
 			const startMs = start.getTime();
@@ -1884,6 +1901,7 @@ class EnergyCompare extends utils.Adapter {
 			}
 			result.totalCost = totalCost;
 			result.quality = quality;
+			result.repairPoints = repairPoints;
 
 			return result;
 		} catch (error) {
@@ -2417,6 +2435,51 @@ class EnergyCompare extends utils.Adapter {
 		return result;
 	}
 
+	async repairOctopusHistory(base, start, end, intervals) {
+		const target = this.config.historyInstance;
+		const pendingId = `${base}.octopus.pendingIntervalRepair`;
+		if (!this.config.enableHistorySync || !target) {
+			return;
+		}
+		const pendingState = this.syncObjectCache.has(`${this.namespace}.${pendingId}`)
+			? await this.getStateAsync(pendingId)
+			: null;
+		const pending = pendingState?.val ? JSON.parse(String(pendingState.val)) : null;
+		if (!intervals) {
+			if (pending?.target !== target || pending.retryAt > Date.now()) {
+				return;
+			}
+			intervals = pending.intervals;
+		}
+		try {
+			await repairIntervals(
+				(command, payload) => this.sendToAsync(target, command, payload),
+				`${this.namespace}.octopus.info.15MinConsumption`,
+				start.getTime(),
+				end.getTime(),
+				intervals,
+			);
+		} catch (error) {
+			// The daily discrepancy can clear even if the DB is offline. Retry without another API call.
+			await this.writeStateObject(
+				pendingId,
+				'Pending Octopus Interval Repair',
+				JSON.stringify({
+					target,
+					intervals,
+					retryAt: Date.now() + DISCREPANCY_FIRST_RETRY_MS,
+				}),
+				'json',
+				'string',
+			);
+			this.log.warn(`Interval repair for ${base} in ${target} deferred: ${error.message}`);
+			return;
+		}
+		if (pendingState?.val) {
+			await this.setStateAsync(pendingId, { val: null, ack: true });
+		}
+	}
+
 	/**
 	 * Check whether daily consumption data for a specific day is already cached.
 	 * Days with 0 or missing consumption are considered not cached to allow retroactive updates
@@ -2542,6 +2605,7 @@ class EnergyCompare extends utils.Adapter {
 		try {
 			// Fetch recent days first so the active billing period is available even if the API limits a startup burst.
 			const syncDate = new Date();
+			let discrepancyRetried = false;
 			for (let i = 1; i <= syncDays; i++) {
 				if (this.stopping) {
 					return;
@@ -2552,6 +2616,12 @@ class EnergyCompare extends utils.Adapter {
 				const basePathYear = `history.${yearStr}`;
 				const basePathMonth = `${basePathYear}.${monthStr}`;
 				const basePathDay = `${basePathMonth}.${dayStr}`;
+				if (
+					this.hasOctopus &&
+					this.syncObjectCache.has(`${this.namespace}.${basePathDay}.octopus.pendingIntervalRepair`)
+				) {
+					await this.repairOctopusHistory(basePathDay, targetDate, endDate, null);
+				}
 
 				const checkOctopus = await this.getStateAsync(`${basePathDay}.octopus.dailyConsumption`);
 				if (checkOctopus?.val !== null && checkOctopus?.val !== undefined) {
@@ -2606,8 +2676,19 @@ class EnergyCompare extends utils.Adapter {
 						!(await needsEnwgCorrection('inexogy'));
 				}
 
+				const regularSync = !hasOctopus || !hasInexogyData || (this.enwgConfigChanged && enwgActive);
+				const retryAtId = `${basePathDay}.comparison.nextOctopusRetry`;
+				const retryDiscrepancy =
+					!regularSync &&
+					!discrepancyRetried &&
+					!this.octopusRateLimited &&
+					this.hasOctopus &&
+					this.hasInexogy &&
+					adapterObjects[`${this.namespace}.${basePathDay}.comparison.hasDiscrepancy`] &&
+					(await this.getStateAsync(`${basePathDay}.comparison.hasDiscrepancy`))?.val === true &&
+					Number((await this.getStateAsync(retryAtId))?.val || 0) <= Date.now();
 				const syncDecision = {
-					shouldProcess: !hasOctopus || !hasInexogyData || (this.enwgConfigChanged && enwgActive),
+					shouldProcess: regularSync || retryDiscrepancy,
 					exportOctopus: !octopusCached,
 					exportInexogy: !inexogyCached,
 				};
@@ -2666,9 +2747,25 @@ class EnergyCompare extends utils.Adapter {
 					const forceRecalculation = this.enwgConfigChanged && enwgActive;
 					let octopusData = null;
 					if (this.hasOctopus) {
-						if (!hasOctopus || forceRecalculation) {
+						if (!hasOctopus || forceRecalculation || retryDiscrepancy) {
 							if (!this.octopusRateLimited) {
-								octopusData = await this.fetchOctopus(targetDate, endDate);
+								if (retryDiscrepancy) {
+									discrepancyRetried = true;
+									await this.writeStateObject(
+										retryAtId,
+										'Next Octopus Discrepancy Retry',
+										Date.now() + DISCREPANCY_REPEAT_MS,
+										'value.time',
+									);
+									this.log.debug(`Rechecking Octopus consumption for discrepant day ${date}.`);
+								}
+								octopusData = await this.fetchOctopus(targetDate, endDate, !!retryDiscrepancy);
+								if (
+									retryDiscrepancy &&
+									(!octopusData || !Number.isFinite(octopusData.total) || octopusData.total <= 0)
+								) {
+									continue; // Preserve the last usable day and its open discrepancy.
+								}
 							}
 						} else {
 							octopusData = await this.loadCachedDayData(basePathDay, 'octopus', enwgActive);
@@ -2683,7 +2780,15 @@ class EnergyCompare extends utils.Adapter {
 					}
 
 					if (octopusData) {
-						if (enwgActive && (!hasOctopus || forceRecalculation)) {
+						if (
+							retryDiscrepancy &&
+							'repairPoints' in octopusData &&
+							Array.isArray(octopusData.repairPoints) &&
+							octopusData.repairPoints.length
+						) {
+							await this.repairOctopusHistory(basePathDay, targetDate, endDate, octopusData.repairPoints);
+						}
+						if (enwgActive && (!hasOctopus || forceRecalculation || retryDiscrepancy)) {
 							await this.writeGridFeeSnapshot(`${basePathDay}.octopus`, targetDate);
 						}
 						if ('quality' in octopusData && octopusData.quality) {
@@ -2930,8 +3035,21 @@ class EnergyCompare extends utils.Adapter {
 							);
 
 							if (totalDiff >= threshold && previousDiscrepancy?.val !== true) {
+								await this.writeStateObject(
+									retryAtId,
+									'Next Octopus Discrepancy Retry',
+									Date.now() + DISCREPANCY_FIRST_RETRY_MS,
+									'value.time',
+								);
 								this.log.warn(
 									`Discrepancy for ${yearStr}-${monthStr}-${dayStr}! Diff: ${totalDiff.toFixed(3)} kWh`,
+								);
+							} else if (totalDiff < threshold && previousDiscrepancy?.val === true) {
+								await this.writeStateObject(
+									retryAtId,
+									'Next Octopus Discrepancy Retry',
+									0,
+									'value.time',
 								);
 							}
 						}

@@ -58,6 +58,7 @@ To install this adapter in your ioBroker environment:
    - **Update interval:** At least 5 minutes between sync runs (default: 60). This does not change the 15-minute consumption data resolution.
    - **Historical sync days:** 1–731 days (default: 30), enough for two years including a leap day. Set data retention at least as high, or to 0 for unlimited retention.
    - **Discrepancy Threshold:** Defines how many `kWh` difference must be present between Octopus and Inexogy to trigger the `hasDiscrepancy: true` state flag. Default is `0.1 kWh`.
+     For flagged days in the sync window, the adapter rechecks Octopus against the cached Inexogy reading after one hour, then at most once per day while the discrepancy persists. Existing flags without a retry timestamp are eligible immediately. Each sync retries at most one cached day, newest first, and respects the Octopus API cooldown. Empty or zero replies do not replace positive cached readings. With interval database export enabled, corrected Octopus quarter hours are compared by timestamp: missing points are inserted and changed values updated. Unchanged and DB-only points are left alone. A daily-only response never generates interval points. Failed database repairs are retried after an hour without fetching Octopus again.
 
 4. **§14a EnWG Settings (Optional):**
    - **Enable § 14a EnWG Calculation:** If activated, calculates daily energy prices taking into account reduced grid fees for controllable consumption devices.
@@ -101,6 +102,8 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Recheck cached Octopus days with an open consumption discrepancy and update corrected daily totals.
+* (tipp88) Repair changed and missing Octopus database intervals on discrepancy rechecks.
 * (tipp88) Handle sync cancellation on shutdown and keep scheduled syncs running after errors.
 * (tipp88) Use the configured sync interval for Octopus rate-limit cooldowns and the next-run estimate; honor longer Retry-After delays.
 * (tipp88) Preserve published Octopus billing periods and tariff totals when daily readings or tariff metadata are temporarily missing.

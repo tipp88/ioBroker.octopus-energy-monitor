@@ -416,6 +416,81 @@ describe('Independent provider operation', () => {
 		expect([...first.errors, ...restarted.errors]).to.deep.equal([]);
 	});
 
+	it('rechecks a flagged cached day from Octopus only and preserves it on unusable replies', async () => {
+		const { a, calls, states, errors } = fixture(true, true);
+		const warnings = [];
+		a.log.warn = message => warnings.push(message);
+		let total = 3;
+		const fetch = a.fetchOctopus;
+		a.fetchOctopus = async () => ({ ...await fetch(), total });
+		await a.syncData();
+		const retry = Object.keys(states).find(id => id.endsWith('.comparison.nextOctopusRetry'));
+		const day = retry.split('.comparison.')[0];
+		const attempts = () => calls.filter(call => call.command === 'octopusDay').length;
+		await a.syncData();
+		expect(attempts()).to.equal(1);
+		delete states[retry]; // Existing installations have no retry timestamp.
+		total = 0;
+		await a.syncData();
+		expect(attempts()).to.equal(2);
+		expect(states[day + '.octopus.dailyConsumption'].val).to.equal(3);
+		expect(states[day + '.comparison.hasDiscrepancy'].val).to.equal(true);
+		expect(states[retry].val).to.be.greaterThan(Date.now() + 23 * 3600000);
+		total = 2.06;
+		await a.syncData();
+		expect(attempts()).to.equal(2);
+		states[retry].val = Date.now() - 1;
+		await a.syncData();
+		await a.syncData();
+		expect(attempts()).to.equal(3);
+		expect(states[day + '.octopus.dailyConsumption'].val).to.equal(2.06);
+		expect(states[day + '.comparison.difference'].val).to.equal(0.06);
+		expect(states[day + '.comparison.hasDiscrepancy'].val).to.equal(false);
+		expect(states[retry].val).to.equal(0);
+		expect(calls.filter(c => c.command === 'inexogyDay')).to.have.length(1);
+		expect(warnings).to.have.length(1);
+		expect(errors).to.deep.equal([]);
+	});
+
+	it('recovers a failed interval repair after the discrepancy clears without refetching the day', async () => {
+		const { a, states, calls } = fixture(true, true);
+		const fetch = a.fetchOctopus;
+		const send = a.sendToAsync;
+		const repairs = [];
+		let online = false;
+		let startMs;
+		a.fetchOctopus = async (start, end, retry) => {
+			startMs = start.getTime();
+			return { ...await fetch(), total: retry ? 2 : 3, repairPoints: retry ? [
+				{ts:startMs, val:0.5}, {ts:startMs+900000,val:1}, {ts:startMs+1800000,val:0.5},
+			] : [] };
+		};
+		a.sendToAsync = async (target, cmd, payload) => {
+			if (cmd === 'getHistory') {
+				if (!online) throw new Error('offline');
+				return {result:[{ts:startMs,val:0.25}, {ts:startMs+900000,val:1}, {ts:startMs+2700000,val:2}]};
+			}
+			if (cmd === 'features') return {supportedFeatures:['update']};
+			if (online) repairs.push({cmd,payload});
+			return send(target, cmd, payload);
+		};
+		await a.syncData();
+		const retry = Object.keys(states).find(id => id.endsWith('.comparison.nextOctopusRetry'));
+		states[retry].val = 0;
+		await a.syncData();
+		const pending = Object.keys(states).find(id => id.endsWith('.pendingIntervalRepair'));
+		expect(states[retry.replace('nextOctopusRetry','hasDiscrepancy')].val).to.equal(false);
+		const job = JSON.parse(states[pending].val);
+		states[pending].val = JSON.stringify({...job,retryAt:0});
+		online = true;
+		await a.syncData();
+		expect(calls.filter(c => c.command === 'octopusDay')).to.have.length(2);
+		expect(repairs.map(r => r.cmd)).to.deep.equal(['storeState','update']);
+		expect(repairs[0].payload.map(p => p.state.ts)).to.deep.equal([startMs+1800000]);
+		expect(repairs[1].payload.state).to.include({ts:startMs,val:0.5});
+		expect(states[pending].val).to.equal(null);
+	});
+
 	it('continues Octopus when Inexogy returns no readings', async () => {
 		const { a, calls, states, errors } = fixture(true, true);
 		a.fetchInexogyReadings = async () => [];
@@ -945,6 +1020,20 @@ describe('Octopus Heat activation windows', () => {
 		expect(result.slots.STANDARD.consumption).to.equal(13);
 		expect(result.slots.HOCH.consumption).to.equal(3);
 		expect(result.totalCost).to.be.closeTo(8 * 0.1883 + 13 * 0.258 + 3 * 0.3, 1e-10);
+	});
+
+	it('does not treat a daily aggregate as a quarter hour even when raw data was requested', async () => {
+		const start = new Date(2026, 10, 1);
+		const end = new Date(2026, 10, 2);
+		const node = { startAt: start.toISOString(), endAt: end.toISOString(), value: '15.17' };
+		axios.post = async () => ({ status: 200, data: { data: { account: { property: { measurements: {
+			edges: [{ node }],
+		} } } } } });
+		const result = await a.fetchOctopus(start, end, true);
+		expect(result.total).to.equal(15.17);
+		expect(result.repairPoints).to.deep.equal([]);
+		node.endAt = new Date(+start + 900000).toISOString();
+		expect((await a.fetchOctopus(start, end, true)).repairPoints).to.deep.equal([{ ts: +start, val: 15.17 }]);
 	});
 
 	it('uses the same windows for Inexogy interval consumption', async () => {
