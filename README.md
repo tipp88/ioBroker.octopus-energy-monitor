@@ -101,6 +101,7 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 
 ## Changelog
 ### **WORK IN PROGRESS**
+* (tipp88) Preserve published Octopus billing periods and tariff totals when daily readings or tariff metadata are temporarily missing.
 * (tipp88) Allow sync intervals from 5 minutes and historical sync windows up to 731 days.
 * (tipp88) Batch daily history existence checks per series and warn only once per instance start when automatic grid fees fall back to manual settings.
 * (tipp88) Read daily export inputs by exact Octopus state IDs in monthly batches instead of wildcard searches.

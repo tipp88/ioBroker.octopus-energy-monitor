@@ -1186,6 +1186,61 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 			global.Date = RealDate;
 		});
 
+		it('keeps published periods through cooldowns and missing days, then resumes updates and cleanup', async () => {
+			const a = factory({});
+			a.namespace = 'octopus-energy-monitor.0';
+			a.config = {billingPeriodStartDay: 18, retentionDays: 60};
+			const objects = {}, states = {};
+			const full = id => id.startsWith(a.namespace + '.') ? id : a.namespace + '.' + id;
+			a.getStateAsync = async id => states[full(id)];
+			a.setObjectNotExistsAsync = async (id, object) => { objects[full(id)] ||= object; };
+			a.setStateAsync = async (id, state) => { states[full(id)] = state; };
+			a.delObjectAsync = async id => { delete objects[full(id)]; delete states[full(id)]; };
+			const put = (id, val) => {
+				objects[full(id)] = {type:'state'};
+				states[full(id)] = {val};
+			};
+			const rates = {rates: [{name:'GO'}], monthlyStandingCharge: 12};
+			a.masterData = rates;
+			for (let d = 18; d <= 28; d++) {
+				const day = 'history.2026.05.' + d + '.octopus.';
+				for (const [field, val] of Object.entries({dailyConsumption: 2, totalCost: 1, goConsumption: 2, goCost: 1})) {
+					put(day + field, val);
+				}
+			}
+			const run = () => a.aggregateHistory({...objects});
+			const bases = ['octopus.periods.2026-05-18.', 'octopus.periods.current.'];
+			await run();
+			const day28 = 'history.2026.05.28.octopus.';
+			put(day28 + 'goConsumption', 5);
+			put(day28 + 'dailyConsumption', 5);
+			for (const unavailable of [null, {rates: []}, {...rates, historicalDataIncomplete:true}]) {
+				a.masterData = unavailable;
+				await run();
+				for (const base of bases) {
+					expect(states[full(base + 'goConsumption')].val).to.equal(22);
+					expect(states[full(base + 'totalConsumption')].val).to.equal(22);
+				}
+			}
+			a.masterData = rates;
+			put(day28 + 'dailyConsumption', null);
+			await run();
+			expect(states[full(bases[0] + 'totalConsumption')].val).to.equal(22);
+			delete objects[full(day28 + 'dailyConsumption')];
+			for (const base of bases) put(base + 'oldCost', 3);
+			await run();
+			for (const base of bases) {
+				expect(states[full(base + 'goConsumption')].val).to.equal(22);
+				expect(states[full(base + 'oldCost')].val).to.equal(3);
+			}
+			put(day28 + 'dailyConsumption', 5);
+			await run();
+			for (const base of bases) {
+				expect(states[full(base + 'goConsumption')].val).to.equal(25);
+				expect(states[full(base + 'oldCost')]).to.be.undefined;
+			}
+		});
+
 		it('should group daily consumption into correct period folders and dynamically sum slots', async () => {
 			const mockObjects = {};
 			const mockStates = {};

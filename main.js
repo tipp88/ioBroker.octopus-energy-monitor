@@ -826,6 +826,7 @@ class EnergyCompare extends utils.Adapter {
 				rates: rates,
 				monthlyStandingCharge: standingChargeEuros,
 				agreements: historicalDataIncomplete ? [] : malo.agreements || [],
+				historicalDataIncomplete,
 			};
 
 			if (this.config.splitGoTariff && masterData.rates.length === 1) {
@@ -3260,16 +3261,16 @@ class EnergyCompare extends utils.Adapter {
 		// A new billing period exists even before its first daily reading arrives.
 		// Seed it so current cannot retain the previous period on rollover day.
 		const activePeriod = this.getPeriodDates(today, billingPeriodStartDay);
-		periodMap[formatDateStr(activePeriod.start)] = {
+		const activeKey = formatDateStr(activePeriod.start);
+		const rates = this.getKnownTariffRates();
+		const periodRates = rates.length ? [...rates, { name: 'UNPRICED' }] : [];
+		periodMap[activeKey] = {
 			start: activePeriod.start,
 			end: activePeriod.end,
 			consumption: 0,
 			cost: 0,
 			slots: Object.fromEntries(
-				[...this.getKnownTariffRates(), { name: 'UNPRICED' }].map(rate => [
-					this.sanitizeIdSegment(rate.name).toLowerCase(),
-					{ consumption: 0, cost: 0 },
-				]),
+				periodRates.map(rate => [this.sanitizeIdSegment(rate.name).toLowerCase(), { consumption: 0, cost: 0 }]),
 			),
 			enwgSlots: this.isEnwgActiveForDate(today, this.config)
 				? Object.fromEntries(['nt', 'st', 'ht'].map(name => [name, { consumption: 0, cost: 0, costNet: 0 }]))
@@ -3285,7 +3286,6 @@ class EnergyCompare extends utils.Adapter {
 					const year = parts[0];
 					const month = parts[1];
 					const day = parts[2];
-					existingDays.add(`${year}-${month}-${day}`);
 
 					if (!yearMap[year]) {
 						yearMap[year] = { consumption: 0, cost: 0, months: {} };
@@ -3295,6 +3295,9 @@ class EnergyCompare extends utils.Adapter {
 					}
 
 					const consState = await this.getStateAsync(id);
+					if (Number.isFinite(consState?.val)) {
+						existingDays.add(`${year}-${month}-${day}`);
+					}
 					const costState = await this.getStateAsync(
 						`${historyPrefix}${year}.${month}.${day}.octopus.totalCost`,
 					);
@@ -3336,8 +3339,8 @@ class EnergyCompare extends utils.Adapter {
 					periodMap[periodKey].cost += cost;
 
 					// Dynamically query slot states
-					if (this.masterData && this.masterData.rates) {
-						for (const rate of [...this.getKnownTariffRates(), { name: 'UNPRICED' }]) {
+					if (periodRates.length) {
+						for (const rate of periodRates) {
 							const slotName = this.sanitizeIdSegment(rate.name).toLowerCase();
 							const slotConsId = `${historyPrefix}${year}.${month}.${day}.octopus.${slotName}Consumption`;
 							const slotCostId = `${historyPrefix}${year}.${month}.${day}.octopus.${slotName}Cost`;
@@ -3474,6 +3477,12 @@ class EnergyCompare extends utils.Adapter {
 		);
 
 		// Keep track of active object IDs for garbage collection
+		// Publish the dated periods and current alias as one consistent snapshot.
+		// Missing tariff metadata (e.g. API cooldown) is not a tariff removal.
+		if (!periodRates.length || this.masterData?.historicalDataIncomplete) {
+			this.log.debug('Keeping existing Octopus billing periods: tariff metadata unavailable or incomplete.');
+			return;
+		}
 		const activePeriodIds = new Set();
 		activePeriodIds.add(`${this.namespace}.octopus.periods`);
 		activePeriodIds.add(`${this.namespace}.octopus.periods.current`);
@@ -3705,8 +3714,28 @@ class EnergyCompare extends utils.Adapter {
 
 		// Cleanup old/legacy objects under octopus.periods.*
 		const prefix = `${this.namespace}.octopus.periods.`;
+		const keepPeriods = new Set();
+		if (!periodMap[activeKey]) {
+			keepPeriods.add('current');
+		}
+		const retentionDays = Number(this.config.retentionDays) || 0;
+		const cutoff = new Date(today);
+		cutoff.setHours(0, 0, 0, 0);
+		cutoff.setDate(cutoff.getDate() - retentionDays);
 		for (const id of Object.keys(objects)) {
 			if (id.startsWith(prefix) && !activePeriodIds.has(id)) {
+				const key = id.slice(prefix.length).split('.')[0];
+				if (!keepPeriods.has(key) && !periodMap[key] && /^\d{4}-\d{2}-\d{2}$/.test(key)) {
+					const period = this.getPeriodDates(new Date(`${key}T12:00:00`), billingPeriodStartDay);
+					// A missing source day (or temporarily empty object view) cannot
+					// invalidate an already published period on this billing schedule.
+					if (formatDateStr(period.start) === key && (!retentionDays || period.end >= cutoff)) {
+						keepPeriods.add(key);
+					}
+				}
+				if (keepPeriods.has(key)) {
+					continue;
+				}
 				this.log.info(`Deleting legacy period object: ${id}`);
 				await this.delObjectAsync(id.substring(this.namespace.length + 1));
 			}
