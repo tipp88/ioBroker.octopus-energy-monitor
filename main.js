@@ -70,6 +70,11 @@ class EnergyCompare extends utils.Adapter {
 		return String(raw).replace(/[^a-zA-Z0-9-_]/g, '_');
 	}
 
+	get syncIntervalMs() {
+		const minutes = Math.min(Number(this.config.updateInterval) || 60, Math.floor(2147483647 / 60000));
+		return Math.max(5, minutes) * 60000;
+	}
+
 	async onReady() {
 		this.log.info('Starting Octopus Energy Monitor Adapter');
 
@@ -139,12 +144,8 @@ class EnergyCompare extends utils.Adapter {
 			}
 		}
 
-		const MAX_INTERVAL_MS = 2147483647;
-		const intervalMinutes = Math.max(
-			5,
-			Math.min(Number(this.config.updateInterval) || 60, Math.floor(MAX_INTERVAL_MS / 60000)),
-		);
-		this.log.info(`Scheduling data sync every ${intervalMinutes} minutes.`);
+		const intervalMs = this.syncIntervalMs;
+		this.log.info(`Scheduling data sync every ${intervalMs / 60000} minutes.`);
 
 		const scheduleNextSync = () => {
 			if (this.stopping) {
@@ -155,7 +156,7 @@ class EnergyCompare extends utils.Adapter {
 					await this.syncData();
 					scheduleNextSync();
 				},
-				intervalMinutes * 60 * 1000,
+				intervalMs,
 			);
 		};
 
@@ -500,14 +501,7 @@ class EnergyCompare extends utils.Adapter {
 		await this.writeStateObject(
 			'info.sync.nextRun',
 			'Next Scheduled Synchronization',
-			running
-				? 0
-				: Date.now() +
-						Math.max(
-							15,
-							Math.min(Number(this.config.updateInterval) || 60, Math.floor(2147483647 / 60000)),
-						) *
-							60000,
+			running ? 0 : Date.now() + this.syncIntervalMs,
 			'value.time',
 		);
 		for (const source of ['octopus', 'inexogy', 'gridFees']) {
@@ -657,7 +651,7 @@ class EnergyCompare extends utils.Adapter {
 				continue;
 			}
 			if (limited) {
-				this.apiCooldowns.set(endpoint, Date.now() + Math.max(retryAfter || 0, 15 * 60000));
+				this.apiCooldowns.set(endpoint, Date.now() + Math.max(retryAfter || 0, this.syncIntervalMs));
 				if (endpoint.includes('oeg-kraken')) {
 					this.octopusRateLimited = true;
 				}
