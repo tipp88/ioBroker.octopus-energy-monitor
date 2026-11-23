@@ -101,7 +101,7 @@ Changing §14a settings recalculates days within the configured sync/retention r
 The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawResponse` contains the API's `module` and `gridFees` fields before validation, `responseDate` is the requested Berlin day, `httpStatus` is the returned status (0 if no response), and `responseTimestamp` dates the diagnostic attempt. `rejectionReason` distinguishes missing data/module, a module other than Module 3, empty fees, invalid entries, validity errors, gaps and overlaps; entry indexes are zero-based. An empty reason means validation succeeded. Cache hits do not update these fields, and no additional requests are triggered for diagnostics. Failed attempts clear the response to JSON `null`. Authentication headers, tokens and account details are not included. These diagnostics report what the API says, not an independent confirmation of module enrollment.
 
 ## Changelog
-### **WORK IN PROGRESS**
+### 1.3.0 (2026-11-23)
 * (tipp88) Recheck cached Octopus days with an open consumption discrepancy and update corrected daily totals.
 * (tipp88) Repair changed and missing Octopus database intervals on discrepancy rechecks.
 * (tipp88) Handle sync cancellation on shutdown and keep scheduled syncs running after errors.
@@ -159,9 +159,6 @@ The latest grid-fee lookup is inspectable under `info.api.gridFees`: `rawRespons
 * (tipp88) Fixed consumption data for previous days not updating automatically when initially retrieved with 0 kWh (Issue #31).
 * (tipp88) Upgraded axios dependency to 1.20.0.
 * (tipp88) Upgraded `@iobroker/testing` devDependency to 6.1.0.
-
-### 1.0.0 (2026-08-27)
-* (tipp88) Fixed the three missing history database synchronization translations reported in issue #18.
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
 

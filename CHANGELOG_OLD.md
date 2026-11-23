@@ -1,4 +1,7 @@
 # Older changes
+## 1.0.0 (2026-08-27)
+* (tipp88) Fixed the three missing history database synchronization translations reported in issue #18.
+
 ## 0.7.0 (2026-07-13)
 * (tipp88) Implemented native historical database synchronization to automatically push 15-minute intervals directly to InfluxDB, SQL, or History instances.
 * (tipp88) Massively optimized Inexogy retroactive API polling by switching to the Discovergy `readings` endpoint, fetching 96 data points in a single request.
