@@ -99,6 +99,54 @@ describe('Independent provider operation', () => {
 		return { a, states, objects, calls, errors };
 	}
 
+	it('allows a two-year lookback in Admin and schedules the next run at the five-minute minimum', async () => {
+		const settings = require('./admin/jsonConfig.json').items.settingsTab.items;
+		expect(settings.syncDays.max).to.be.at.least(731);
+		expect(settings.updateInterval.min).to.equal(5);
+		for (const minutes of [1, 5, 15]) {
+			const { a } = fixture(true, false);
+			a.config.updateInterval = minutes;
+			const timers = [];
+			a.setTimeout = (callback, delay) => timers.push({ callback, delay });
+			a.syncData = async () => {};
+			await a.onReady();
+			await timers[0].callback();
+			expect(timers[1].delay).to.equal(Math.max(5, minutes) * 60000);
+		}
+	});
+
+	it('handles unload during the first diagnostic write without logging or scheduling another sync', async () => {
+		const { a, errors } = fixture(true, false);
+		const timers = [];
+		a.setTimeout = callback => timers.push(callback);
+		a.clearTimeout = () => {};
+		await a.onReady();
+		let finishWrite;
+		a.setObjectNotExistsAsync = () => new Promise(resolve => { finishWrite = resolve; });
+		const run = timers[0]();
+		let unloaded = false;
+		const unload = a.onUnload(() => { unloaded = true; });
+		finishWrite();
+		await Promise.all([run, unload]);
+		expect(unloaded).to.equal(true);
+		expect(a.activeSync).to.equal(null);
+		expect(errors).to.deep.equal([]);
+		expect(timers).to.have.length(1);
+	});
+
+	it('logs a failed sync and retries at the normal interval on initial and recurring runs', async () => {
+		const { a, errors } = fixture(true, false);
+		const timers = [];
+		a.config.updateInterval = 5;
+		a.setTimeout = (callback, delay) => timers.push({ callback, delay });
+		await a.onReady();
+		a.writeDiagnostics = async () => { throw new Error('diagnostic write failed'); };
+		await timers[0].callback();
+		await timers[1].callback();
+		expect(errors).to.deep.equal(Array(2).fill('Scheduled synchronization failed: diagnostic write failed'));
+		expect(timers.map(timer => timer.delay)).to.deep.equal([5000, 300000, 300000]);
+	});
+
 	for (const [octopus, inexogy] of [
 		[true, false],
 		[false, true],
@@ -125,6 +173,56 @@ describe('Independent provider operation', () => {
 			expect(calls.filter(call => call.command === 'storeState')).to.have.length(exportsBefore);
 		});
 	}
+
+	it('exports a cached Octopus day when daily-only export is activated without another usage request', async () => {
+		const { a, states, calls } = fixture(true, false);
+		a.config.enableHistorySync = false;
+		await a.syncData();
+		a.config.enableDailyHistorySync = true;
+		a.getForeignStatesAsync = async ids => Object.fromEntries(Object.entries(states)
+			.map(([id, state]) => [a.namespace + '.' + id, state])
+			.filter(([id]) => ids.includes(id)));
+		await a.syncData();
+		await a.syncData();
+		expect(calls.filter(c => c.command === 'octopusDay')).to.have.length(1);
+		const batches = calls.filter(c => c.command === 'storeState');
+		expect(batches).to.have.length(1);
+		expect(batches[0].payload.map(p => p.id.replace(a.namespace + '.octopus.daily.', '')).sort())
+			.to.deep.equal(['consumption', 'cost', 'tariff.standard.consumption', 'tariff.standard.cost']);
+	});
+
+	it('fetches Module 1 diagnostics without manual settings and keeps ordinary daily usage', async () => {
+		const { a, states, errors } = fixture(true, true);
+		Object.assign(a.config, { octopusAccount: 'test', enwgEnabled: true, enwgAutoGridFees: true,
+			enwgStartDate: '2020-01-01', retentionDays: 2, enwgTimeWindows: [] });
+		const master = a.fetchOctopusMasterData;
+		a.fetchOctopusMasterData = async () => {
+			await master();
+			a.masterData.gridOperatorCode = 'test';
+			return a.masterData;
+		};
+		const response = { module: 'MODULE_1', gridFees: [{ rate: 'unused' }] };
+		const warnings = [];
+		a.log.warn = message => warnings.push(message);
+		a.requestOctopus = async () => ({ status: 200, data: { data: { variableGridFees: response } } });
+		await a.onReady();
+		await a.syncData();
+		expect(errors).to.deep.equal([]);
+		expect(JSON.parse(states['info.api.gridFees.rawResponse'].val)).to.deep.equal(response);
+		expect(states['info.api.gridFees.rejectionReason'].val).to.equal('module_not_3');
+		expect(warnings.filter(message => message.includes('Configure manual grid fees'))).to.have.length(1);
+		for (const source of ['octopus', 'inexogy']) {
+			const daily = Object.keys(states).filter(id => id.endsWith(`.${source}.gridFeeSource`));
+			expect(daily).to.have.length(2);
+			for (const id of daily) {
+				expect(states[id].val).to.equal('unavailable');
+				const base = id.slice(0, -'gridFeeSource'.length);
+				expect(states[base + 'gridFeeSchedule'].val).to.equal('null');
+				expect(states[base + 'dailyConsumption'].val).to.equal(2);
+				expect(states[base + 'ntConsumption'].val).to.equal(null);
+			}
+		}
+	});
 
 	it('corrects cached multi-window days once, resumes failures and does not export intervals again', async () => {
 		const { a, states, calls } = fixture(true, true);
@@ -318,6 +416,81 @@ describe('Independent provider operation', () => {
 		expect([...first.errors, ...restarted.errors]).to.deep.equal([]);
 	});
 
+	it('rechecks a flagged cached day from Octopus only and preserves it on unusable replies', async () => {
+		const { a, calls, states, errors } = fixture(true, true);
+		const warnings = [];
+		a.log.warn = message => warnings.push(message);
+		let total = 3;
+		const fetch = a.fetchOctopus;
+		a.fetchOctopus = async () => ({ ...await fetch(), total });
+		await a.syncData();
+		const retry = Object.keys(states).find(id => id.endsWith('.comparison.nextOctopusRetry'));
+		const day = retry.split('.comparison.')[0];
+		const attempts = () => calls.filter(call => call.command === 'octopusDay').length;
+		await a.syncData();
+		expect(attempts()).to.equal(1);
+		delete states[retry]; // Existing installations have no retry timestamp.
+		total = 0;
+		await a.syncData();
+		expect(attempts()).to.equal(2);
+		expect(states[day + '.octopus.dailyConsumption'].val).to.equal(3);
+		expect(states[day + '.comparison.hasDiscrepancy'].val).to.equal(true);
+		expect(states[retry].val).to.be.greaterThan(Date.now() + 23 * 3600000);
+		total = 2.06;
+		await a.syncData();
+		expect(attempts()).to.equal(2);
+		states[retry].val = Date.now() - 1;
+		await a.syncData();
+		await a.syncData();
+		expect(attempts()).to.equal(3);
+		expect(states[day + '.octopus.dailyConsumption'].val).to.equal(2.06);
+		expect(states[day + '.comparison.difference'].val).to.equal(0.06);
+		expect(states[day + '.comparison.hasDiscrepancy'].val).to.equal(false);
+		expect(states[retry].val).to.equal(0);
+		expect(calls.filter(c => c.command === 'inexogyDay')).to.have.length(1);
+		expect(warnings).to.have.length(1);
+		expect(errors).to.deep.equal([]);
+	});
+
+	it('recovers a failed interval repair after the discrepancy clears without refetching the day', async () => {
+		const { a, states, calls } = fixture(true, true);
+		const fetch = a.fetchOctopus;
+		const send = a.sendToAsync;
+		const repairs = [];
+		let online = false;
+		let startMs;
+		a.fetchOctopus = async (start, end, retry) => {
+			startMs = start.getTime();
+			return { ...await fetch(), total: retry ? 2 : 3, repairPoints: retry ? [
+				{ts:startMs, val:0.5}, {ts:startMs+900000,val:1}, {ts:startMs+1800000,val:0.5},
+			] : [] };
+		};
+		a.sendToAsync = async (target, cmd, payload) => {
+			if (cmd === 'getHistory') {
+				if (!online) throw new Error('offline');
+				return {result:[{ts:startMs,val:0.25}, {ts:startMs+900000,val:1}, {ts:startMs+2700000,val:2}]};
+			}
+			if (cmd === 'features') return {supportedFeatures:['update']};
+			if (online) repairs.push({cmd,payload});
+			return send(target, cmd, payload);
+		};
+		await a.syncData();
+		const retry = Object.keys(states).find(id => id.endsWith('.comparison.nextOctopusRetry'));
+		states[retry].val = 0;
+		await a.syncData();
+		const pending = Object.keys(states).find(id => id.endsWith('.pendingIntervalRepair'));
+		expect(states[retry.replace('nextOctopusRetry','hasDiscrepancy')].val).to.equal(false);
+		const job = JSON.parse(states[pending].val);
+		states[pending].val = JSON.stringify({...job,retryAt:0});
+		online = true;
+		await a.syncData();
+		expect(calls.filter(c => c.command === 'octopusDay')).to.have.length(2);
+		expect(repairs.map(r => r.cmd)).to.deep.equal(['storeState','update']);
+		expect(repairs[0].payload.map(p => p.state.ts)).to.deep.equal([startMs+1800000]);
+		expect(repairs[1].payload.state).to.include({ts:startMs,val:0.5});
+		expect(states[pending].val).to.equal(null);
+	});
+
 	it('continues Octopus when Inexogy returns no readings', async () => {
 		const { a, calls, states, errors } = fixture(true, true);
 		a.fetchInexogyReadings = async () => [];
@@ -360,6 +533,70 @@ describe('Independent provider operation', () => {
 			global.Date = RealDate;
 		}
 	});
+
+	for (const [year, month, day, previousKey, previousDays] of [
+		[2026, 10, 18, '2026-10-18', 31],
+		[2026, 11, 1, '2026-11-01', 30],
+	]) {
+		it(`rolls the current period over on ${year}-${month + 1}-${day} before its first reading`, async () => {
+			const RealDate = global.Date;
+			let now = new RealDate(year, month, day, 12);
+			// @ts-ignore
+			global.Date = function (...args) {
+				// @ts-ignore
+				return args.length ? new RealDate(...args) : new RealDate(now);
+			};
+			global.Date.now = () => now.getTime();
+			global.Date.UTC = RealDate.UTC;
+			global.Date.parse = RealDate.parse;
+			try {
+				const { a, states, errors } = fixture(true, false);
+				a.config.billingPeriodStartDay = day;
+				a.config.syncDays = previousDays;
+				a.config.retentionDays = previousDays;
+				a.enwgEnabled = true;
+				a.config.enwgEnabled = true;
+				a.config.enwgStartDate = '2026-01-01';
+				states['octopus.periods.current.startDate'] = { val: previousKey, ack: true };
+				states['octopus.periods.current.totalConsumption'] = { val: 534.251, ack: true };
+				states['octopus.periods.current.standardConsumption'] = { val: 500, ack: true };
+				states['octopus.periods.current.ntConsumption'] = { val: 400, ack: true };
+				await a.syncData();
+				expect(errors).to.deep.equal([]);
+				const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+				const end = a.getPeriodDates(now, day).end;
+				const endKey = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+				for (const base of [`octopus.periods.${key}`, 'octopus.periods.current']) {
+					expect(states[`${base}.startDate`].val).to.equal(key);
+					expect(states[`${base}.endDate`].val).to.equal(endKey);
+					for (const name of ['totalConsumption', 'totalCost', 'totalCostWithStandingCharge',
+						'standardConsumption', 'standardCost', 'unpricedConsumption',
+						'ntConsumption', 'ntCost', 'ntCostNet', 'stConsumption', 'htConsumption']) {
+						expect(states[`${base}.${name}`]?.val, `${base}.${name}`).to.equal(0);
+					}
+				}
+				const previousTotal = states[`octopus.periods.${previousKey}.totalConsumption`].val;
+				expect(previousTotal).to.equal(previousDays * 2);
+				expect(states[`octopus.periods.${previousKey}.totalCost`].val).to.be.closeTo(previousDays * 0.6, 0.001);
+
+				// Historical standing charges must also be zero for a period with no elapsed days.
+				a.masterData.agreements = [historicalAgreement('test', '2026-01-01', null, 30)];
+				await a.aggregateHistory();
+				expect(states['octopus.periods.current.totalCostWithStandingCharge'].val).to.equal(0);
+
+				// The next day's sync adds the first reading without changing the closed period.
+				now = new RealDate(year, month, day + 1, 12);
+				a.config.syncDays = 1;
+				await a.syncData();
+				expect(errors).to.deep.equal([]);
+				expect(states['octopus.periods.current.totalConsumption'].val).to.equal(2);
+				expect(states[`octopus.periods.${key}.totalConsumption`].val).to.equal(2);
+				expect(states[`octopus.periods.${previousKey}.totalConsumption`].val).to.equal(previousTotal);
+			} finally {
+				global.Date = RealDate;
+			}
+		});
+	}
 
 	it('aggregates cached Octopus days when the object view is incomplete after an instance start', async () => {
 		const RealDate = global.Date;
@@ -785,6 +1022,20 @@ describe('Octopus Heat activation windows', () => {
 		expect(result.totalCost).to.be.closeTo(8 * 0.1883 + 13 * 0.258 + 3 * 0.3, 1e-10);
 	});
 
+	it('does not treat a daily aggregate as a quarter hour even when raw data was requested', async () => {
+		const start = new Date(2026, 10, 1);
+		const end = new Date(2026, 10, 2);
+		const node = { startAt: start.toISOString(), endAt: end.toISOString(), value: '15.17' };
+		axios.post = async () => ({ status: 200, data: { data: { account: { property: { measurements: {
+			edges: [{ node }],
+		} } } } } });
+		const result = await a.fetchOctopus(start, end, true);
+		expect(result.total).to.equal(15.17);
+		expect(result.repairPoints).to.deep.equal([]);
+		node.endAt = new Date(+start + 900000).toISOString();
+		expect((await a.fetchOctopus(start, end, true)).repairPoints).to.deep.equal([{ ts: +start, val: 15.17 }]);
+	});
+
 	it('uses the same windows for Inexogy interval consumption', async () => {
 		a.inexogyMeterId = 'test';
 		a.fetchInexogyReadings = async () => Array.from({ length: 97 }, (_, i) => ({
@@ -1054,6 +1305,61 @@ describe('§14a EnWG Tariff Resolution & Validation Tests', () => {
 
 		after(() => {
 			global.Date = RealDate;
+		});
+
+		it('keeps published periods through cooldowns and missing days, then resumes updates and cleanup', async () => {
+			const a = factory({});
+			a.namespace = 'octopus-energy-monitor.0';
+			a.config = {billingPeriodStartDay: 18, retentionDays: 60};
+			const objects = {}, states = {};
+			const full = id => id.startsWith(a.namespace + '.') ? id : a.namespace + '.' + id;
+			a.getStateAsync = async id => states[full(id)];
+			a.setObjectNotExistsAsync = async (id, object) => { objects[full(id)] ||= object; };
+			a.setStateAsync = async (id, state) => { states[full(id)] = state; };
+			a.delObjectAsync = async id => { delete objects[full(id)]; delete states[full(id)]; };
+			const put = (id, val) => {
+				objects[full(id)] = {type:'state'};
+				states[full(id)] = {val};
+			};
+			const rates = {rates: [{name:'GO'}], monthlyStandingCharge: 12};
+			a.masterData = rates;
+			for (let d = 18; d <= 28; d++) {
+				const day = 'history.2026.05.' + d + '.octopus.';
+				for (const [field, val] of Object.entries({dailyConsumption: 2, totalCost: 1, goConsumption: 2, goCost: 1})) {
+					put(day + field, val);
+				}
+			}
+			const run = () => a.aggregateHistory({...objects});
+			const bases = ['octopus.periods.2026-05-18.', 'octopus.periods.current.'];
+			await run();
+			const day28 = 'history.2026.05.28.octopus.';
+			put(day28 + 'goConsumption', 5);
+			put(day28 + 'dailyConsumption', 5);
+			for (const unavailable of [null, {rates: []}, {...rates, historicalDataIncomplete:true}]) {
+				a.masterData = unavailable;
+				await run();
+				for (const base of bases) {
+					expect(states[full(base + 'goConsumption')].val).to.equal(22);
+					expect(states[full(base + 'totalConsumption')].val).to.equal(22);
+				}
+			}
+			a.masterData = rates;
+			put(day28 + 'dailyConsumption', null);
+			await run();
+			expect(states[full(bases[0] + 'totalConsumption')].val).to.equal(22);
+			delete objects[full(day28 + 'dailyConsumption')];
+			for (const base of bases) put(base + 'oldCost', 3);
+			await run();
+			for (const base of bases) {
+				expect(states[full(base + 'goConsumption')].val).to.equal(22);
+				expect(states[full(base + 'oldCost')].val).to.equal(3);
+			}
+			put(day28 + 'dailyConsumption', 5);
+			await run();
+			for (const base of bases) {
+				expect(states[full(base + 'goConsumption')].val).to.equal(25);
+				expect(states[full(base + 'oldCost')]).to.be.undefined;
+			}
 		});
 
 		it('should group daily consumption into correct period folders and dynamically sum slots', async () => {

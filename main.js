@@ -5,8 +5,12 @@ const { agreementAt, grossPrice, tariffRates } = require('./lib/historical-price
 const apiPolicy = require('./lib/api-policy');
 const { intervalQuality } = require('./lib/data-quality');
 const gridFeesApi = require('./lib/grid-fees');
+const { exportDays } = require('./lib/daily-export');
+const { repairIntervals } = require('./lib/interval-repair');
 
 const AXIOS_TIMEOUT = 30000;
+const DISCREPANCY_FIRST_RETRY_MS = 60 * 60 * 1000;
+const DISCREPANCY_REPEAT_MS = 24 * DISCREPANCY_FIRST_RETRY_MS;
 const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
 	timeZone: 'Europe/Berlin',
 	year: 'numeric',
@@ -18,12 +22,19 @@ const BERLIN_CLOCK = new Intl.DateTimeFormat('en-GB', {
 	hourCycle: 'h23',
 });
 
+class AdapterStoppingError extends Error {
+	constructor() {
+		super('Adapter stopping');
+	}
+}
+
 class EnergyCompare extends utils.Adapter {
 	constructor(options) {
 		super({ ...options, name: 'octopus-energy-monitor' });
 		this.on('ready', this.onReady.bind(this));
 		this.on('unload', this.onUnload.bind(this));
 		this.on('stateChange', this.onStateChange.bind(this));
+		this.on('message', this.onMessage.bind(this));
 		this.syncInterval = null;
 		this.masterData = null;
 		this.octopusAuthToken = null;
@@ -46,6 +57,8 @@ class EnergyCompare extends utils.Adapter {
 		};
 		this.pageDuplicates = 0;
 		this.gridFeeCache = new Map();
+		this.warnedMissingGridFeeFallback = false;
+		this.warnedUsingGridFeeFallback = false;
 		this.http = {
 			get: async (url, options) => {
 				try {
@@ -64,6 +77,11 @@ class EnergyCompare extends utils.Adapter {
 
 	sanitizeIdSegment(raw) {
 		return String(raw).replace(/[^a-zA-Z0-9-_]/g, '_');
+	}
+
+	get syncIntervalMs() {
+		const minutes = Math.min(Number(this.config.updateInterval) || 60, Math.floor(2147483647 / 60000));
+		return Math.max(5, minutes) * 60000;
 	}
 
 	async onReady() {
@@ -85,7 +103,8 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		// Validate §14a EnWG configuration
-		const validation = this.validateEnwgConfig(this.config);
+		const validation =
+			this.config.enwgEnabled && !this.config.enwgAutoGridFees ? this.validateManualGridFees() : { valid: true };
 		if (!validation.valid) {
 			this.log.error(
 				`§14a EnWG configuration is invalid: ${validation.error}. Disabling EnWG price calculations!`,
@@ -134,24 +153,26 @@ class EnergyCompare extends utils.Adapter {
 			}
 		}
 
-		const MAX_INTERVAL_MS = 2147483647;
-		const intervalMinutes = Math.max(
-			15,
-			Math.min(Number(this.config.updateInterval) || 60, Math.floor(MAX_INTERVAL_MS / 60000)),
-		);
-		this.log.info(`Scheduling data sync every ${intervalMinutes} minutes.`);
+		const intervalMs = this.syncIntervalMs;
+		this.log.info(`Scheduling data sync every ${intervalMs / 60000} minutes.`);
 
-		const scheduleNextSync = () => {
-			if (this.stopping) {
-				return;
+		const runScheduledSync = async () => {
+			try {
+				await this.syncData();
+			} catch (error) {
+				if (
+					!(
+						this.stopping &&
+						(error instanceof AdapterStoppingError || axios.isCancel(error) || error?.name === 'AbortError')
+					)
+				) {
+					this.log.error(`Scheduled synchronization failed: ${error?.message ?? error}`);
+				}
+			} finally {
+				if (!this.stopping) {
+					this.syncInterval = this.setTimeout(runScheduledSync, intervalMs);
+				}
 			}
-			this.syncInterval = this.setTimeout(
-				async () => {
-					await this.syncData();
-					scheduleNextSync();
-				},
-				intervalMinutes * 60 * 1000,
-			);
 		};
 
 		if (this.hasOctopus) {
@@ -159,10 +180,7 @@ class EnergyCompare extends utils.Adapter {
 			this.subscribeStates('octopus.devices.*.refresh');
 		}
 
-		this.syncTimeout = this.setTimeout(async () => {
-			await this.syncData();
-			scheduleNextSync();
-		}, 5000);
+		this.syncTimeout = this.setTimeout(runScheduledSync, 5000);
 	}
 
 	async cleanupLegacyHistory(adapterObjects) {
@@ -393,7 +411,7 @@ class EnergyCompare extends utils.Adapter {
 	 */
 	async writeStateObject(id, name, value, role = 'value', type = 'number', unit = '') {
 		if (this.stopping) {
-			throw new Error('Adapter stopping');
+			throw new AdapterStoppingError();
 		}
 		if (type === 'number' && typeof value === 'number' && !Number.isFinite(value)) {
 			value = null;
@@ -495,14 +513,7 @@ class EnergyCompare extends utils.Adapter {
 		await this.writeStateObject(
 			'info.sync.nextRun',
 			'Next Scheduled Synchronization',
-			running
-				? 0
-				: Date.now() +
-						Math.max(
-							15,
-							Math.min(Number(this.config.updateInterval) || 60, Math.floor(2147483647 / 60000)),
-						) *
-							60000,
+			running ? 0 : Date.now() + this.syncIntervalMs,
 			'value.time',
 		);
 		for (const source of ['octopus', 'inexogy', 'gridFees']) {
@@ -562,7 +573,7 @@ class EnergyCompare extends utils.Adapter {
 
 	async ensureOctopusToken(force = false) {
 		if (this.stopping) {
-			throw new Error('Adapter stopping');
+			throw new AdapterStoppingError();
 		}
 		if (this.tokenRefresh) {
 			return this.tokenRefresh;
@@ -598,7 +609,7 @@ class EnergyCompare extends utils.Adapter {
 
 	async requestOctopus(payload, endpoint = 'https://api.oeg-kraken.energy/v1/graphql/') {
 		if (this.stopping) {
-			throw new Error('Adapter stopping');
+			throw new AdapterStoppingError();
 		}
 		const retryAt = this.apiCooldowns.get(endpoint) || 0;
 		if (retryAt > Date.now()) {
@@ -652,7 +663,7 @@ class EnergyCompare extends utils.Adapter {
 				continue;
 			}
 			if (limited) {
-				this.apiCooldowns.set(endpoint, Date.now() + Math.max(retryAfter || 0, 15 * 60000));
+				this.apiCooldowns.set(endpoint, Date.now() + Math.max(retryAfter || 0, this.syncIntervalMs));
 				if (endpoint.includes('oeg-kraken')) {
 					this.octopusRateLimited = true;
 				}
@@ -821,6 +832,7 @@ class EnergyCompare extends utils.Adapter {
 				rates: rates,
 				monthlyStandingCharge: standingChargeEuros,
 				agreements: historicalDataIncomplete ? [] : malo.agreements || [],
+				historicalDataIncomplete,
 			};
 
 			if (this.config.splitGoTariff && masterData.rates.length === 1) {
@@ -920,8 +932,29 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		const windows = config.enwgTimeWindows || [];
-		if (windows.length === 0) {
+		if (!Array.isArray(windows) || windows.length === 0) {
 			return { valid: false, error: 'No time windows configured.' };
+		}
+		const clock = /^(?:[01]\d|2[0-3]):(?:00|15|30|45)$/;
+		for (const win of windows) {
+			if (
+				!win ||
+				!['NT', 'ST', 'HT'].includes(win.tariff) ||
+				!clock.test(win.startTime) ||
+				!(clock.test(win.endTime) || win.endTime === '24:00') ||
+				win.startTime === win.endTime
+			) {
+				return { valid: false, error: 'Invalid tariff or time window.' };
+			}
+			const months = String(win.months ?? '').trim();
+			if (
+				months &&
+				months !== '*' &&
+				months.toLowerCase() !== 'all' &&
+				!months.split(',').every(month => /^(?:0?[1-9]|1[0-2])$/.test(month.trim()))
+			) {
+				return { valid: false, error: 'Invalid months in time window.' };
+			}
 		}
 
 		for (let month = 1; month <= 12; month++) {
@@ -1174,6 +1207,97 @@ class EnergyCompare extends utils.Adapter {
 		return entry?.schedule?.intervals.get(Math.floor(date.getTime() / 900000) * 900000) || null;
 	}
 
+	canCalculateEnwg(date) {
+		if (!this.isEnwgActiveForDate(date, this.config)) {
+			return false;
+		}
+		if (!this.config.enwgAutoGridFees) {
+			return true;
+		}
+		const source = this.gridFeeCache.get(this.gridFeeCacheKey(date))?.source;
+		return source === 'api' || source === 'manual_fallback';
+	}
+
+	hasManualGridFeeAmounts() {
+		const fees = [this.config.enwgGridFeeSt, this.config.enwgGridFeeNt, this.config.enwgGridFeeHt];
+		const amounts = fees.map(value => {
+			const raw = String(value ?? '')
+				.trim()
+				.replace(',', '.');
+			return /^(?:\d+\.?\d*|\.\d+)$/.test(raw) ? Number(raw) : NaN;
+		});
+		return amounts.every(value => Number.isFinite(value) && value >= 0) && amounts.some(value => value > 0);
+	}
+
+	validateManualGridFees() {
+		if (!this.hasManualGridFeeAmounts()) {
+			return { valid: false, error: 'Configure manual NT/ST/HT grid fees' };
+		}
+		return this.validateEnwgConfig(this.config);
+	}
+
+	requestGridFeeResponse(date, operator) {
+		return this.requestOctopus(
+			{
+				query: gridFeesApi.QUERY,
+				variables: { accountNumber: this.config.octopusAccount, gridOperatorCode: operator, date },
+			},
+			gridFeesApi.ENDPOINT,
+		);
+	}
+
+	async onMessage(message) {
+		if (message.command !== 'previewGridFees' || !message.callback) {
+			return;
+		}
+		let reply;
+		try {
+			reply = await this.previewGridFees(message.message?.account);
+		} catch (error) {
+			const code = String(error?.code || '');
+			reply = {
+				error: 'gridFeeRequestFailed',
+				detail: /^[A-Z0-9_]{1,48}$/.test(code) ? code : 'REQUEST_EXCEPTION',
+			};
+		}
+		if (reply.error) {
+			this.log.warn(
+				`Grid fee preview: ${reply.error} (${reply.detail || reply.args?.join(', ') || 'account/operator not ready'}).`,
+			);
+		}
+		this.sendTo(message.from, message.command, reply, message.callback);
+	}
+
+	async previewGridFees(account) {
+		const operator = this.masterData?.gridOperatorCode;
+		if (!this.hasOctopus || !account || account !== this.config.octopusAccount || !operator) {
+			return { error: 'gridFeeAccountRequired' };
+		}
+		const day = this.getBerlinDay(new Date());
+		const response = await this.requestGridFeeResponse(day.date, operator);
+		if (response.status !== 200 || response.data?.errors?.length) {
+			const codes = apiPolicy.errorCodes(response).filter(code => /^[A-Z0-9_-]{1,64}$/.test(code));
+			const detail = [
+				`HTTP ${response.status}`,
+				...(codes.length ? codes : response.data?.errors?.length ? ['GraphQL'] : []),
+			].join(', ');
+			return { error: 'gridFeeRequestFailed', detail };
+		}
+		const payload = response.data?.data?.variableGridFees;
+		const diagnostics = { reason: '' };
+		const schedule = gridFeesApi.normalizeGridFees(payload, operator, day.start, day.end, diagnostics, true);
+		const native = schedule && gridFeesApi.toManualSettings(schedule);
+		if (native && payload.module !== 'MODULE_3') {
+			return { preview: { module: payload.module, date: day.date, settings: native } };
+		}
+		return native
+			? { native, result: 'gridFeeImported', args: [day.date] }
+			: {
+					error: 'gridFeeInvalidSchedule',
+					args: [payload?.module || '—', diagnostics.reason || 'not_representable'],
+				};
+	}
+
 	async prepareGridFees(date) {
 		if (!this.config.enwgAutoGridFees || !this.isEnwgActiveForDate(date, this.config)) {
 			return;
@@ -1190,17 +1314,7 @@ class EnergyCompare extends utils.Adapter {
 		let rawResponse = 'null';
 		if (this.hasOctopus && this.config.octopusAccount && operator) {
 			try {
-				const response = await this.requestOctopus(
-					{
-						query: gridFeesApi.QUERY,
-						variables: {
-							accountNumber: this.config.octopusAccount,
-							gridOperatorCode: operator,
-							date: day.date,
-						},
-					},
-					gridFeesApi.ENDPOINT,
-				);
+				const response = await this.requestGridFeeResponse(day.date, operator);
 				httpStatus = response.status;
 				const payload = response.data?.data?.variableGridFees;
 				// Keep only the requested fee fields, never headers, tokens or account data.
@@ -1226,7 +1340,11 @@ class EnergyCompare extends utils.Adapter {
 		if (this.stopping) {
 			return;
 		}
-		const entry = { schedule, reason, expires: Date.now() + (schedule ? 86400000 : 900000) };
+		let source = 'api';
+		if (!schedule) {
+			source = this.validateManualGridFees().valid ? 'manual_fallback' : 'unavailable';
+		}
+		const entry = { schedule, reason, source, expires: Date.now() + (schedule ? 86400000 : 900000) };
 		this.gridFeeCache.set(key, entry);
 		while (this.gridFeeCache.size > 400) {
 			this.gridFeeCache.delete(this.gridFeeCache.keys().next().value);
@@ -1248,14 +1366,20 @@ class EnergyCompare extends utils.Adapter {
 			Date.now(),
 			'value.time',
 		);
-		if (!schedule) {
+		if (source === 'unavailable' && !this.warnedMissingGridFeeFallback) {
+			this.warnedMissingGridFeeFallback = true;
+			this.log.warn(
+				`§14a automatic grid fees unavailable for ${day.date} (${reason}). Configure manual grid fees and time windows for fallback. Continuing with regular tariff prices.`,
+			);
+		} else if (source === 'manual_fallback' && !this.warnedUsingGridFeeFallback) {
+			this.warnedUsingGridFeeFallback = true;
 			this.log.warn(`§14a automatic grid fees unavailable for ${day.date} (${reason}); using manual settings.`);
 		}
 	}
 
 	async writeGridFeeSnapshot(base, date) {
 		const entry = this.config.enwgAutoGridFees ? this.gridFeeCache.get(this.gridFeeCacheKey(date)) : null;
-		const source = entry?.schedule ? 'api' : this.config.enwgAutoGridFees ? 'manual_fallback' : 'manual';
+		const source = this.config.enwgAutoGridFees ? entry?.source || 'unavailable' : 'manual';
 		await this.writeStateObject(`${base}.gridFeeSource`, 'Grid Fee Source', source, 'text', 'string');
 		await this.writeStateObject(
 			`${base}.gridFeeFallbackReason`,
@@ -1274,7 +1398,9 @@ class EnergyCompare extends utils.Adapter {
 							module: entry.schedule.module,
 							rates: entry.schedule.rates,
 						}
-					: { fees: this.getEnwgGridFees(this.config), windows: this.config.enwgTimeWindows || [] },
+					: source === 'unavailable'
+						? null
+						: { fees: this.getEnwgGridFees(this.config), windows: this.config.enwgTimeWindows || [] },
 			),
 			'json',
 			'string',
@@ -1415,7 +1541,7 @@ class EnergyCompare extends utils.Adapter {
 	}
 
 	calculateHistoricalUsage(edges, start, end) {
-		const enwgActive = this.isEnwgActiveForDate(start, this.config);
+		const enwgActive = this.canCalculateEnwg(start);
 		const result = {
 			total: 0,
 			totalCost: 0,
@@ -1540,12 +1666,12 @@ class EnergyCompare extends utils.Adapter {
 		throw new Error('Octopus pagination exceeded its safety limit');
 	}
 
-	async fetchOctopus(start, end) {
+	async fetchOctopus(start, end, forIntervalRepair = false) {
 		try {
 			if (!this.masterData) {
 				return null;
 			}
-			const enwgActive = this.isEnwgActiveForDate(start, this.config);
+			const enwgActive = this.canCalculateEnwg(start);
 			const isSplit = (this.masterData.isTimeOfUse && this.masterData.rates.length > 1) || enwgActive;
 
 			const fetchRaw = !!this.masterData.agreements || isSplit || this.config.enableHistorySync;
@@ -1647,9 +1773,23 @@ class EnergyCompare extends utils.Adapter {
 			if (quality) {
 				quality.duplicates += this.pageDuplicates;
 			}
+			const repairPoints =
+				forIntervalRepair && fetchRaw
+					? edges.flatMap(({ node }) => {
+							const ts = Date.parse(node.startAt);
+							const val = Number(node.value);
+							return Date.parse(node.endAt) - ts === 900000 &&
+								node.value != null &&
+								String(node.value).trim() !== '' &&
+								Number.isFinite(val) &&
+								val >= 0
+								? [{ ts, val }]
+								: [];
+						})
+					: [];
 			if (this.masterData.agreements) {
 				const result = this.calculateHistoricalUsage(edges, start, end);
-				return result ? { ...result, quality } : null;
+				return result ? { ...result, quality, repairPoints } : null;
 			}
 
 			const startMs = start.getTime();
@@ -1761,6 +1901,7 @@ class EnergyCompare extends utils.Adapter {
 			}
 			result.totalCost = totalCost;
 			result.quality = quality;
+			result.repairPoints = repairPoints;
 
 			return result;
 		} catch (error) {
@@ -1792,7 +1933,7 @@ class EnergyCompare extends utils.Adapter {
 
 	async fetchInexogy(start, end) {
 		try {
-			const enwgActive = this.isEnwgActiveForDate(start, this.config);
+			const enwgActive = this.canCalculateEnwg(start);
 			const rates = this.getKnownTariffRates();
 			const isSplit =
 				!!this.masterData?.agreements || (this.masterData?.isTimeOfUse && rates.length > 1) || enwgActive;
@@ -2271,7 +2412,7 @@ class EnergyCompare extends utils.Adapter {
 			};
 		}
 
-		if (enwgActive) {
+		if (enwgActive && (await this.getStateAsync(`${basePathDay}.${source}.gridFeeSource`))?.val !== 'unavailable') {
 			result.enwgSlots = {};
 			for (const slotName of ['NT', 'ST', 'HT']) {
 				const safeName = slotName.toLowerCase();
@@ -2292,6 +2433,51 @@ class EnergyCompare extends utils.Adapter {
 		}
 
 		return result;
+	}
+
+	async repairOctopusHistory(base, start, end, intervals) {
+		const target = this.config.historyInstance;
+		const pendingId = `${base}.octopus.pendingIntervalRepair`;
+		if (!this.config.enableHistorySync || !target) {
+			return;
+		}
+		const pendingState = this.syncObjectCache.has(`${this.namespace}.${pendingId}`)
+			? await this.getStateAsync(pendingId)
+			: null;
+		const pending = pendingState?.val ? JSON.parse(String(pendingState.val)) : null;
+		if (!intervals) {
+			if (pending?.target !== target || pending.retryAt > Date.now()) {
+				return;
+			}
+			intervals = pending.intervals;
+		}
+		try {
+			await repairIntervals(
+				(command, payload) => this.sendToAsync(target, command, payload),
+				`${this.namespace}.octopus.info.15MinConsumption`,
+				start.getTime(),
+				end.getTime(),
+				intervals,
+			);
+		} catch (error) {
+			// The daily discrepancy can clear even if the DB is offline. Retry without another API call.
+			await this.writeStateObject(
+				pendingId,
+				'Pending Octopus Interval Repair',
+				JSON.stringify({
+					target,
+					intervals,
+					retryAt: Date.now() + DISCREPANCY_FIRST_RETRY_MS,
+				}),
+				'json',
+				'string',
+			);
+			this.log.warn(`Interval repair for ${base} in ${target} deferred: ${error.message}`);
+			return;
+		}
+		if (pendingState?.val) {
+			await this.setStateAsync(pendingId, { val: null, ack: true });
+		}
 	}
 
 	/**
@@ -2419,6 +2605,7 @@ class EnergyCompare extends utils.Adapter {
 		try {
 			// Fetch recent days first so the active billing period is available even if the API limits a startup burst.
 			const syncDate = new Date();
+			let discrepancyRetried = false;
 			for (let i = 1; i <= syncDays; i++) {
 				if (this.stopping) {
 					return;
@@ -2429,6 +2616,12 @@ class EnergyCompare extends utils.Adapter {
 				const basePathYear = `history.${yearStr}`;
 				const basePathMonth = `${basePathYear}.${monthStr}`;
 				const basePathDay = `${basePathMonth}.${dayStr}`;
+				if (
+					this.hasOctopus &&
+					this.syncObjectCache.has(`${this.namespace}.${basePathDay}.octopus.pendingIntervalRepair`)
+				) {
+					await this.repairOctopusHistory(basePathDay, targetDate, endDate, null);
+				}
 
 				const checkOctopus = await this.getStateAsync(`${basePathDay}.octopus.dailyConsumption`);
 				if (checkOctopus?.val !== null && checkOctopus?.val !== undefined) {
@@ -2483,8 +2676,19 @@ class EnergyCompare extends utils.Adapter {
 						!(await needsEnwgCorrection('inexogy'));
 				}
 
+				const regularSync = !hasOctopus || !hasInexogyData || (this.enwgConfigChanged && enwgActive);
+				const retryAtId = `${basePathDay}.comparison.nextOctopusRetry`;
+				const retryDiscrepancy =
+					!regularSync &&
+					!discrepancyRetried &&
+					!this.octopusRateLimited &&
+					this.hasOctopus &&
+					this.hasInexogy &&
+					adapterObjects[`${this.namespace}.${basePathDay}.comparison.hasDiscrepancy`] &&
+					(await this.getStateAsync(`${basePathDay}.comparison.hasDiscrepancy`))?.val === true &&
+					Number((await this.getStateAsync(retryAtId))?.val || 0) <= Date.now();
 				const syncDecision = {
-					shouldProcess: !hasOctopus || !hasInexogyData || (this.enwgConfigChanged && enwgActive),
+					shouldProcess: regularSync || retryDiscrepancy,
 					exportOctopus: !octopusCached,
 					exportInexogy: !inexogyCached,
 				};
@@ -2543,9 +2747,25 @@ class EnergyCompare extends utils.Adapter {
 					const forceRecalculation = this.enwgConfigChanged && enwgActive;
 					let octopusData = null;
 					if (this.hasOctopus) {
-						if (!hasOctopus || forceRecalculation) {
+						if (!hasOctopus || forceRecalculation || retryDiscrepancy) {
 							if (!this.octopusRateLimited) {
-								octopusData = await this.fetchOctopus(targetDate, endDate);
+								if (retryDiscrepancy) {
+									discrepancyRetried = true;
+									await this.writeStateObject(
+										retryAtId,
+										'Next Octopus Discrepancy Retry',
+										Date.now() + DISCREPANCY_REPEAT_MS,
+										'value.time',
+									);
+									this.log.debug(`Rechecking Octopus consumption for discrepant day ${date}.`);
+								}
+								octopusData = await this.fetchOctopus(targetDate, endDate, !!retryDiscrepancy);
+								if (
+									retryDiscrepancy &&
+									(!octopusData || !Number.isFinite(octopusData.total) || octopusData.total <= 0)
+								) {
+									continue; // Preserve the last usable day and its open discrepancy.
+								}
 							}
 						} else {
 							octopusData = await this.loadCachedDayData(basePathDay, 'octopus', enwgActive);
@@ -2560,7 +2780,15 @@ class EnergyCompare extends utils.Adapter {
 					}
 
 					if (octopusData) {
-						if (enwgActive && (!hasOctopus || forceRecalculation)) {
+						if (
+							retryDiscrepancy &&
+							'repairPoints' in octopusData &&
+							Array.isArray(octopusData.repairPoints) &&
+							octopusData.repairPoints.length
+						) {
+							await this.repairOctopusHistory(basePathDay, targetDate, endDate, octopusData.repairPoints);
+						}
+						if (enwgActive && (!hasOctopus || forceRecalculation || retryDiscrepancy)) {
 							await this.writeGridFeeSnapshot(`${basePathDay}.octopus`, targetDate);
 						}
 						if ('quality' in octopusData && octopusData.quality) {
@@ -2652,12 +2880,12 @@ class EnergyCompare extends utils.Adapter {
 								await this.writeStateObject(
 									`${basePathDay}.octopus.${safeName}Consumption`,
 									`Consumption EnWG ${slotName}`,
-									0,
+									this.config.enwgAutoGridFees && enwgActive ? null : 0,
 								);
 								await this.writeStateObject(
 									`${basePathDay}.octopus.${safeName}Cost`,
 									`Cost EnWG ${slotName}`,
-									0,
+									this.config.enwgAutoGridFees && enwgActive ? null : 0,
 									'value',
 									'number',
 									'€',
@@ -2665,7 +2893,7 @@ class EnergyCompare extends utils.Adapter {
 								await this.writeStateObject(
 									`${basePathDay}.octopus.${safeName}CostNet`,
 									`Cost Net EnWG ${slotName}`,
-									0,
+									this.config.enwgAutoGridFees && enwgActive ? null : 0,
 									'value',
 									'number',
 									'€',
@@ -2775,8 +3003,15 @@ class EnergyCompare extends utils.Adapter {
 								await this.writeStateObject(
 									`${basePathDay}.inexogy.${safeName}Consumption`,
 									`Consumption EnWG ${slotName}`,
-									0,
+									this.config.enwgAutoGridFees && enwgActive ? null : 0,
 								);
+								if (comparisonAvailable && enwgActive && this.config.enwgAutoGridFees) {
+									await this.writeStateObject(
+										`${basePathDay}.comparison.${safeName}Difference`,
+										`Difference EnWG ${slotName}`,
+										null,
+									);
+								}
 							}
 						}
 
@@ -2800,8 +3035,21 @@ class EnergyCompare extends utils.Adapter {
 							);
 
 							if (totalDiff >= threshold && previousDiscrepancy?.val !== true) {
+								await this.writeStateObject(
+									retryAtId,
+									'Next Octopus Discrepancy Retry',
+									Date.now() + DISCREPANCY_FIRST_RETRY_MS,
+									'value.time',
+								);
 								this.log.warn(
 									`Discrepancy for ${yearStr}-${monthStr}-${dayStr}! Diff: ${totalDiff.toFixed(3)} kWh`,
+								);
+							} else if (totalDiff < threshold && previousDiscrepancy?.val === true) {
+								await this.writeStateObject(
+									retryAtId,
+									'Next Octopus Discrepancy Retry',
+									0,
+									'value.time',
 								);
 							}
 						}
@@ -2948,6 +3196,22 @@ class EnergyCompare extends utils.Adapter {
 
 			// 4. Apply data retention
 			await this.applyDataRetention(updatedObjects);
+			if (
+				this.hasOctopus &&
+				this.config.enableDailyHistorySync &&
+				this.config.historyInstance &&
+				!this.stopping
+			) {
+				try {
+					await exportDays(this, updatedObjects);
+				} catch (error) {
+					if (!this.stopping) {
+						this.log.warn(
+							`Octopus daily export to ${this.config.historyInstance} interrupted; will retry: ${error.message}`,
+						);
+					}
+				}
+			}
 		} catch (error) {
 			this.log.error(`Error during syncData: ${error.message}`);
 		} finally {
@@ -3115,6 +3379,25 @@ class EnergyCompare extends utils.Adapter {
 			return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 		};
 
+		// A new billing period exists even before its first daily reading arrives.
+		// Seed it so current cannot retain the previous period on rollover day.
+		const activePeriod = this.getPeriodDates(today, billingPeriodStartDay);
+		const activeKey = formatDateStr(activePeriod.start);
+		const rates = this.getKnownTariffRates();
+		const periodRates = rates.length ? [...rates, { name: 'UNPRICED' }] : [];
+		periodMap[activeKey] = {
+			start: activePeriod.start,
+			end: activePeriod.end,
+			consumption: 0,
+			cost: 0,
+			slots: Object.fromEntries(
+				periodRates.map(rate => [this.sanitizeIdSegment(rate.name).toLowerCase(), { consumption: 0, cost: 0 }]),
+			),
+			enwgSlots: this.isEnwgActiveForDate(today, this.config)
+				? Object.fromEntries(['nt', 'st', 'ht'].map(name => [name, { consumption: 0, cost: 0, costNet: 0 }]))
+				: {},
+		};
+
 		for (const id of Object.keys(objects)) {
 			if (id.startsWith(historyPrefix)) {
 				const relativeId = id.substring(historyPrefix.length);
@@ -3124,7 +3407,6 @@ class EnergyCompare extends utils.Adapter {
 					const year = parts[0];
 					const month = parts[1];
 					const day = parts[2];
-					existingDays.add(`${year}-${month}-${day}`);
 
 					if (!yearMap[year]) {
 						yearMap[year] = { consumption: 0, cost: 0, months: {} };
@@ -3134,6 +3416,9 @@ class EnergyCompare extends utils.Adapter {
 					}
 
 					const consState = await this.getStateAsync(id);
+					if (Number.isFinite(consState?.val)) {
+						existingDays.add(`${year}-${month}-${day}`);
+					}
 					const costState = await this.getStateAsync(
 						`${historyPrefix}${year}.${month}.${day}.octopus.totalCost`,
 					);
@@ -3175,8 +3460,8 @@ class EnergyCompare extends utils.Adapter {
 					periodMap[periodKey].cost += cost;
 
 					// Dynamically query slot states
-					if (this.masterData && this.masterData.rates) {
-						for (const rate of [...this.getKnownTariffRates(), { name: 'UNPRICED' }]) {
+					if (periodRates.length) {
+						for (const rate of periodRates) {
 							const slotName = this.sanitizeIdSegment(rate.name).toLowerCase();
 							const slotConsId = `${historyPrefix}${year}.${month}.${day}.octopus.${slotName}Consumption`;
 							const slotCostId = `${historyPrefix}${year}.${month}.${day}.octopus.${slotName}Cost`;
@@ -3205,7 +3490,8 @@ class EnergyCompare extends utils.Adapter {
 							if (!periodMap[periodKey].enwgSlots[slotName]) {
 								periodMap[periodKey].enwgSlots[slotName] = { consumption: 0, cost: 0, costNet: 0 };
 							}
-							periodMap[periodKey].enwgSlots[slotName].consumption += Number(slotConsState?.val) || 0;
+							periodMap[periodKey].enwgSlots[slotName].consumption +=
+								slotConsState?.val === null ? NaN : Number(slotConsState?.val) || 0;
 							periodMap[periodKey].enwgSlots[slotName].cost +=
 								slotCostState?.val === null ? NaN : Number(slotCostState?.val) || 0;
 							periodMap[periodKey].enwgSlots[slotName].costNet +=
@@ -3312,6 +3598,12 @@ class EnergyCompare extends utils.Adapter {
 		);
 
 		// Keep track of active object IDs for garbage collection
+		// Publish the dated periods and current alias as one consistent snapshot.
+		// Missing tariff metadata (e.g. API cooldown) is not a tariff removal.
+		if (!periodRates.length || this.masterData?.historicalDataIncomplete) {
+			this.log.debug('Keeping existing Octopus billing periods: tariff metadata unavailable or incomplete.');
+			return;
+		}
 		const activePeriodIds = new Set();
 		activePeriodIds.add(`${this.namespace}.octopus.periods`);
 		activePeriodIds.add(`${this.namespace}.octopus.periods.current`);
@@ -3543,8 +3835,28 @@ class EnergyCompare extends utils.Adapter {
 
 		// Cleanup old/legacy objects under octopus.periods.*
 		const prefix = `${this.namespace}.octopus.periods.`;
+		const keepPeriods = new Set();
+		if (!periodMap[activeKey]) {
+			keepPeriods.add('current');
+		}
+		const retentionDays = Number(this.config.retentionDays) || 0;
+		const cutoff = new Date(today);
+		cutoff.setHours(0, 0, 0, 0);
+		cutoff.setDate(cutoff.getDate() - retentionDays);
 		for (const id of Object.keys(objects)) {
 			if (id.startsWith(prefix) && !activePeriodIds.has(id)) {
+				const key = id.slice(prefix.length).split('.')[0];
+				if (!keepPeriods.has(key) && !periodMap[key] && /^\d{4}-\d{2}-\d{2}$/.test(key)) {
+					const period = this.getPeriodDates(new Date(`${key}T12:00:00`), billingPeriodStartDay);
+					// A missing source day (or temporarily empty object view) cannot
+					// invalidate an already published period on this billing schedule.
+					if (formatDateStr(period.start) === key && (!retentionDays || period.end >= cutoff)) {
+						keepPeriods.add(key);
+					}
+				}
+				if (keepPeriods.has(key)) {
+					continue;
+				}
 				this.log.info(`Deleting legacy period object: ${id}`);
 				await this.delObjectAsync(id.substring(this.namespace.length + 1));
 			}
@@ -3602,7 +3914,7 @@ class EnergyCompare extends utils.Adapter {
 			if (this.isEnwgActiveForDate(targetDate, this.config)) {
 				for (const slotName of ['nt', 'st', 'ht']) {
 					dayObj[`${slotName}Consumption`] =
-						(await this.getStateAsync(`${basePath}.octopus.${slotName}Consumption`))?.val || 0;
+						(await this.getStateAsync(`${basePath}.octopus.${slotName}Consumption`))?.val ?? null;
 					dayObj[`${slotName}Cost`] =
 						(await this.getStateAsync(`${basePath}.octopus.${slotName}Cost`))?.val ?? null;
 					dayObj[`${slotName}CostNet`] =
@@ -3632,7 +3944,7 @@ class EnergyCompare extends utils.Adapter {
 				if (this.isEnwgActiveForDate(targetDate, this.config)) {
 					for (const slotName of ['nt', 'st', 'ht']) {
 						inxDayObj[`${slotName}Consumption`] =
-							(await this.getStateAsync(`${basePath}.inexogy.${slotName}Consumption`))?.val || 0;
+							(await this.getStateAsync(`${basePath}.inexogy.${slotName}Consumption`))?.val ?? null;
 					}
 				}
 

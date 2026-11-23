@@ -141,6 +141,7 @@
     "loglevel": "info",
     "tier": 3,
     "mode": "daemon",
+    "messagebox": true,
     "type": "energy",
     "compact": true,
     "connectionType": "cloud",
@@ -188,6 +189,7 @@
     "enwgGridFeesAreGross": false,
     "enwgTimeWindows": [],
     "enableHistorySync": false,
+    "enableDailyHistorySync": false,
     "historyInstance": "",
     "billingPeriodStartDay": 1
   },

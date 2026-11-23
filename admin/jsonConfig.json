@@ -221,7 +221,7 @@
 				"updateInterval": {
 					"type": "number",
 					"label": "Update Interval (minutes)",
-					"min": 15,
+					"min": 5,
 					"help": {
 						"en": "Polling frequency. Recommended: 15-60 min. Warning: Values below 15 min cause excessive API calls and high CPU load during data aggregation.",
 						"de": "Abfrageintervall. Empfohlen: 15-60 min. Warnung: Werte unter 15 min verursachen übermäßige API-Aufrufe und hohe CPU-Auslastung bei der Datenaggregation.",
@@ -257,7 +257,7 @@
 					"type": "number",
 					"label": "Historical Sync Days (Default: 30)",
 					"min": 1,
-					"max": 365,
+					"max": 731,
 					"newLine": false,
 					"xs": 12,
 					"sm": 12,
@@ -305,11 +305,18 @@
 					"lg": 4,
 					"xl": 4
 				},
+				"enableDailyHistorySync": {
+					"type": "checkbox",
+					"label": { "de": "Octopus-Tageswerte in die Datenbank exportieren", "en": "Export Octopus daily values to the database" },
+					"help": { "de": "Exportiert gespeicherte Verbräuche und Bruttokosten als feste Diagramm-IDs, unabhängig vom 15-Minuten-Export.", "en": "Exports stored consumption and gross costs to stable chart IDs independently of the 15-minute export." },
+					"newLine": true,
+					"xs": 12, "sm": 12, "md": 6, "lg": 4, "xl": 4
+				},
 				"historyInstance": {
 					"type": "instance",
 					"label": "History Database Instance",
 					"adapter": "_dataSources",
-					"hidden": "!data.enableHistorySync",
+					"hidden": "!data.enableHistorySync && !data.enableDailyHistorySync",
 					"newLine": false,
 					"xs": 12,
 					"sm": 12,
@@ -357,8 +364,8 @@
 						"de": "Automatische Octopus-Modul-3-Netzentgelte (experimentell)"
 					},
 					"help": {
-						"en": "Requires Octopus credentials. Uses date-specific net API fees and Berlin time windows. Keep valid manual fees/windows as fallback. Changing this option recalculates retained days.",
-						"de": "Benötigt Octopus-Zugangsdaten. Verwendet tagesgültige Netto-API-Entgelte und Berliner Zeitfenster. Gültige manuelle Entgelte/Zeitfenster als Rückfalloption beibehalten. Änderungen berechnen gespeicherte Tage neu."
+						"en": "Fetches grid fees from Octopus. Manual fees and time windows are optional and used if no valid API schedule is available. Changing this option recalculates retained days.",
+						"de": "Ruft Netzentgelte bei Octopus ab. Manuelle Entgelte und Zeitfenster sind optional und werden verwendet, wenn kein gültiger API-Zeitplan vorliegt. Änderungen berechnen gespeicherte Tage neu."
 					},
 					"newLine": true,
 					"xs": 12,
@@ -366,6 +373,14 @@
 					"md": 12,
 					"lg": 12,
 					"xl": 12
+				},
+				"_previewGridFees": {
+					"type": "custom",
+					"url": "custom/gridFeeDialog.js",
+					"bundlerType": "module",
+					"guiApi": 2,
+					"name": "OctopusGridFees/Components/GridFeeDialog",
+					"newLine": true
 				},
 				"gridFeesHeader": {
 					"type": "header",

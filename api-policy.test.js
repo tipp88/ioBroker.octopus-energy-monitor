@@ -25,11 +25,28 @@ describe('API request lifecycle', () => {
 		a.octopusTokenExpiresAt=Date.now()-1;await a.ensureOctopusToken();expect(calls).to.equal(2);
 	});
 	it('defers long rate limits and does not issue requests during cooldown',async()=>{
+		a.config.updateInterval = 5;
 		let calls=0;axios.post=async()=>{calls++;return {status:429,headers:{'retry-after':'1800'},data:{}};};
 		await a.requestOctopus({query:'query X { viewer { id } }'});
 		await a.requestOctopus({query:'query X { viewer { id } }'});
 		expect(calls).to.equal(1);expect(waits).to.deep.equal([]);
 		expect(a.apiCooldowns.values().next().value).to.be.greaterThan(Date.now()+1790000);
+	});
+	it('uses one configured sync interval as the cooldown floor without extending it on skipped calls', async () => {
+		for (const [minutes, header] of [[5, undefined], [7, '30']]) {
+			a.config.updateInterval = minutes;
+			a.apiCooldowns.clear();
+			let calls = 0;
+			axios.post = async () => { calls++; return {status:429, headers:{'retry-after':header}, data:{}}; };
+			const before = Date.now();
+			await a.requestOctopus({query:'query X {}'});
+			const until = a.apiCooldowns.values().next().value;
+			expect(until).to.be.within(before + minutes * 60000, Date.now() + minutes * 60000);
+			const beforeSkip = calls;
+			await a.requestOctopus({query:'query X {}'});
+			expect(calls).to.equal(beforeSkip);
+			expect(a.apiCooldowns.values().next().value).to.equal(until);
+		}
 	});
 	it('bounds GraphQL quota retries and server-error retries without logging in',async()=>{
 		let calls=0;axios.post=async()=>{calls++;return {status:200,data:{errors:[{extensions:{errorCode:'KT-CT-1199'}}]}};};
